@@ -58,9 +58,15 @@ class FakeResponse:
 class FakeClaude:
     """Replays a scripted list of responses, recording what it was sent."""
 
+    name = "anthropic"
+    supports_tools = True
+
     def __init__(self, responses: list[FakeResponse]) -> None:
         self.responses = list(responses)
         self.calls: list[dict[str, Any]] = []
+
+    def available(self) -> bool:
+        return True
 
     async def turn(self, *, model, messages, system=None, tools=None, effort=None,
                    thinking=True, on_text=None, on_thinking=None):

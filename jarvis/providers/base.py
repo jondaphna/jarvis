@@ -58,3 +58,45 @@ class LLMProvider(ABC):
 
     def default_model(self) -> str:
         raise NotImplementedError
+
+
+# --------------------------------------------------------------------------- #
+# Response adapters
+#
+# The agent loop speaks Anthropic's content-block shape, because it's the
+# richest of the formats. Any other provider that wants to drive the loop
+# adapts its own response into these, so the loop itself never branches on
+# which brain is answering.
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class TextBlock:
+    text: str
+    type: str = "text"
+
+
+@dataclass
+class ToolUseBlock:
+    name: str
+    input: dict[str, Any]
+    id: str
+    type: str = "tool_use"
+
+
+@dataclass
+class AdaptedUsage:
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+
+
+@dataclass
+class AdaptedResponse:
+    """Quacks like an SDK message, for providers that aren't Anthropic."""
+
+    content: list[Any] = field(default_factory=list)
+    stop_reason: str = "end_turn"
+    model: str = ""
+    usage: AdaptedUsage = field(default_factory=AdaptedUsage)
+    stop_details: Any = None

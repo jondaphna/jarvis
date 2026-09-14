@@ -67,7 +67,30 @@ python -m jarvis doctor
 This prints exactly what's working and what isn't, and tells you the command to fix
 each gap. Nothing is silently broken.
 
-### 5. Talk to it
+### 5. Point it at the right speakers and microphone
+
+Windows machines usually have several of each, and the default is often the
+wrong one — which looks exactly like "JARVIS is broken".
+
+```bash
+jarvis devices
+```
+
+That lists everything with its real name. Pick yours:
+
+```bash
+jarvis devices --set-output "NVIDIA"     # what you hear it through
+jarvis devices --set-input "Lenovo"      # the microphone it hears you through
+```
+
+Then prove both directions work:
+
+```bash
+jarvis say "systems online"    # you should hear this
+jarvis listen                  # say something; it prints what it heard
+```
+
+### 6. Talk to it
 
 ```bash
 python -m jarvis chat      # terminal
@@ -160,6 +183,74 @@ Every decision, allowed or refused, is written to an audit log:
 ```bash
 jarvis doctor             # current permissions and pending approvals
 ```
+
+---
+
+## Paying as little as possible
+
+Claude costs money per message — roughly **$0.006** once the prompt cache is
+warm, more on the first message of a session. JARVIS gives you three ways to cut
+that down.
+
+**1. A free local brain.** Install [Ollama](https://ollama.com), then:
+
+```bash
+ollama pull llama3.1
+```
+
+That's it — JARVIS notices it's running and routes everyday chat through it for
+**$0.00**. Local models can use tools too, so "open Chrome", "tidy my files" and
+"what's in this folder" all work offline and free.
+
+**2. A code word for the hard stuff.** Local models are weaker at long,
+multi-step work. When something matters, say the words:
+
+> "**heavy guns**, research my three biggest competitors and write me a plan"
+
+That one request goes to Claude; everything after it goes back to free. Other
+phrases that work: *big guns, full power, max power, use claude, serious mode*.
+Change them in settings:
+
+```bash
+jarvis config brain.escalate_phrases "heavy guns,totach,full power"
+```
+
+**3. A cheaper Claude for chat.** If you'd rather not run a local model:
+
+```bash
+jarvis config models.general claude-haiku-4-5
+```
+
+~5x cheaper for conversation, while overnight missions stay on Opus where the
+intelligence earns its cost.
+
+Missions always use Claude regardless — an unattended job that fails at 3am
+costs more than it saves. There's also a **$5/day hard cap** by default:
+
+```bash
+jarvis config autonomy.daily_spend_cap_usd 5
+```
+
+| Setting | Everyday chat | Overnight missions |
+|---|---|---|
+| Default | Claude Opus 5 | Claude Opus 5 |
+| With Ollama installed | **free, local** | Claude Opus 5 |
+| `models.general` = haiku | Claude Haiku (~5x cheaper) | Claude Opus 5 |
+
+---
+
+## The floating orb
+
+Close the main window and JARVIS doesn't go away — a small circle stays on top of
+everything else.
+
+- **Say the wake word** — it swells and shows what it heard
+- **Click it** — talk without the wake word
+- **Double-click** — bring the full window back
+- **Drag it** — anywhere you like; it remembers where
+- **Right-click** — talk, open, hide, or quit
+
+Turn it off with `jarvis config ui.floating_orb false`.
 
 ---
 
@@ -269,6 +360,10 @@ jarvis approvals        what's waiting               --approve ID / --deny ID
 jarvis doctor           what's working and what isn't
 jarvis plugins          installed plugins and tools
 jarvis keys list|set|remove
+jarvis devices          list microphones and speakers; --set-input / --set-output
+jarvis say "hello"      speak a line out loud (tests audio output)
+jarvis listen           record one sentence (tests the microphone)
+jarvis config KEY VALUE read or change any setting
 jarvis where            where JARVIS keeps its files
 ```
 
@@ -295,6 +390,16 @@ whitelisting harder.
 what overnight autonomy needs, and it's what Claude is best at. Haiku 4.5 handles
 voice replies (fast and cheap), Opus 5 handles missions. Change either in Settings;
 OpenAI, Gemini and local Ollama are wired up as fallbacks.
+
+**Fish Audio for a custom voice.** If you want a specific JARVIS voice rather
+than a stock one, add a Fish Audio key and paste the voice model id from its
+page on fish.audio:
+
+```bash
+jarvis keys set FISH_API_KEY
+jarvis config voice.fish_voice_id <the id from the fish.audio model page>
+jarvis say "at your service"
+```
 
 **Free voice by default.** `faster-whisper` transcribes locally — free, private,
 works offline. `edge-tts` speaks — free, no key, genuinely good. Paid engines
@@ -326,6 +431,8 @@ Start with `jarvis doctor`. It names the problem and the fix.
 | "No AI provider configured" | `jarvis keys set ANTHROPIC_API_KEY` |
 | Voice input unavailable | `pip install faster-whisper sounddevice numpy` |
 | No voice output | `pip install edge-tts` |
+| JARVIS talks but you hear nothing | Wrong speakers. `jarvis devices --set-output "NVIDIA"` then `jarvis say "test"` |
+| JARVIS never hears you | Wrong microphone. `jarvis devices --set-input "Lenovo"` then `jarvis listen` |
 | First voice reply is slow | Normal — the local speech model downloads once (~150MB) |
 | Video merging fails | Install ffmpeg and put it on PATH ([ffmpeg.org](https://ffmpeg.org/download.html)) |
 | Missions don't fire | They ship disabled. Enable in the Missions tab, and leave `jarvis daemon` or the app running |
@@ -338,7 +445,7 @@ Logs are in the folder `jarvis where` prints.
 ## Testing
 
 ```bash
-pytest tests -q        # 127 tests, no API key or network needed
+pytest tests -q        # 173 tests, no API key or network needed
 ```
 
 The permission tests are the ones that matter — they're the safety net for

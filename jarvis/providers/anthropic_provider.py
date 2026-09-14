@@ -302,6 +302,9 @@ def completion_from(response: Any, provider: str = "anthropic") -> Completion:
     cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
     cache_write = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
 
+    # Only Anthropic models are billed per token here; a local model is free.
+    billable = provider in ("anthropic", "claude")
+
     return Completion(
         text=text,
         model=model,
@@ -310,7 +313,8 @@ def completion_from(response: Any, provider: str = "anthropic") -> Completion:
         output_tokens=output_tokens,
         cache_read_tokens=cache_read,
         cache_write_tokens=cache_write,
-        cost_usd=estimate_cost(model, input_tokens, output_tokens, cache_read, cache_write),
+        cost_usd=(estimate_cost(model, input_tokens, output_tokens, cache_read,
+                                cache_write) if billable else 0.0),
         stop_reason=stop_reason,
         raw=response,
     )

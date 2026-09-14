@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import events
+from .audio import list_devices, resolve_device
 from .events import bus, log
 
 SAMPLE_RATE = 16000
@@ -68,16 +69,7 @@ class Microphone:
 
     @staticmethod
     def devices() -> list[dict[str, Any]]:
-        try:
-            import sounddevice
-            return [
-                {"index": index, "name": device["name"],
-                 "inputs": device["max_input_channels"]}
-                for index, device in enumerate(sounddevice.query_devices())
-                if device["max_input_channels"] > 0
-            ]
-        except Exception:
-            return []
+        return list_devices("input")
 
     @property
     def level(self) -> float:
@@ -103,7 +95,8 @@ class Microphone:
 
         silence_ms = silence_ms or int(self.settings.get("voice.vad_silence_ms", 700))
         silence_frames = max(1, silence_ms // FRAME_MS)
-        device = self.settings.get("voice.input_device")
+        device = resolve_device(self.settings.get("voice.input_device"),
+                                want_input=True)
 
         frames: list[bytes] = []
         inbox: queue.Queue = queue.Queue()

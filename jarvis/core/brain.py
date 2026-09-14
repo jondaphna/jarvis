@@ -42,6 +42,7 @@ class Reply:
     #: fills the text in as turns complete.
     text: str = ""
     model: str = ""
+    provider: str = ""
     conversation_id: int | None = None
     tool_calls: list[str] = field(default_factory=list)
     input_tokens: int = 0
@@ -104,6 +105,38 @@ and carry on. The user clears the queue in the morning.
 - Leave a short, honest summary of what got done and what didn't."""
 
 
+
+DEFAULT_ESCALATION_PHRASES = [
+    "heavy guns", "big guns", "full power", "max power", "use claude",
+    "bring in claude", "serious mode",
+]
+
+
+def find_escalation(text: str, phrases: list[str]) -> tuple[bool, str]:
+    """Spot a 'use the good model' phrase and strip it from the request.
+
+    Returns (escalate, cleaned_text). Matching is case-insensitive and the
+    phrase can sit anywhere in the sentence, so both "heavy guns, research the
+    competition" and "research the competition - heavy guns" work.
+    """
+    import re as _re
+
+    cleaned = text
+    escalate = False
+    for phrase in phrases or DEFAULT_ESCALATION_PHRASES:
+        phrase = (phrase or "").strip()
+        if not phrase:
+            continue
+        pattern = _re.compile(r"\b" + _re.escape(phrase) + r"\b", _re.IGNORECASE)
+        if pattern.search(cleaned):
+            escalate = True
+            cleaned = pattern.sub(" ", cleaned)
+
+    if escalate:
+        cleaned = _re.sub(r"\s{2,}", " ", cleaned).strip(" ,.-:;!")
+    return escalate, (cleaned or text).strip()
+
+
 class Brain:
     """Routes to a model, runs the agent loop, keeps the books."""
 
@@ -120,6 +153,8 @@ class Brain:
         self.broker = broker
         self.registry = registry
         self.providers = build_providers(config)
+        self._local_ok = False
+        self._local_checked_at = -1e9
 
     # ------------------------------------------------------------------ #
     # Providers
@@ -131,6 +166,48 @@ class Brain:
         if not isinstance(provider, AnthropicProvider):
             raise ProviderError("The Claude provider failed to load.")
         return provider
+
+    # ------------------------------------------------------------------ #
+    # Which brain answers this?
+    # ------------------------------------------------------------------ #
+
+    def _local_available(self) -> bool:
+        """Is Ollama up? Cached, because checking costs a round trip."""
+        provider = self.providers.get("ollama")
+        if provider is None:
+            return False
+        now = time.monotonic()
+        if now - self._local_checked_at < 60:
+            return self._local_ok
+        self._local_ok = provider.available()
+        self._local_checked_at = now
+        return self._local_ok
+
+    def local_ready(self) -> bool:
+        return self._local_available()
+
+    def choose_brain(self, tier: str, escalate: bool) -> tuple[Any, str, str]:
+        """Pick (provider, model, label) for this turn.
+
+        Free local model for everyday talk; Claude when the user asks for it by
+        name, for missions, or when Ollama isn't running.
+        """
+        mode = self.settings.get("brain.local_first", "auto")
+        want_local = (
+            not escalate
+            and tier not in (TIER_DEEP,)
+            and mode is not False
+            and str(mode).lower() != "false"
+        )
+
+        if want_local and self._local_available():
+            provider = self.providers["ollama"]
+            model = self.settings.get("brain.local_model") or provider.default_model()
+            return provider, model, "local"
+
+        if escalate:
+            tier = self.settings.get("brain.escalate_tier", TIER_DEEP)
+        return self.anthropic, self.model_for(tier), "claude"
 
     def ready(self) -> bool:
         return any(provider.available() for provider in self.providers.values())
@@ -206,7 +283,15 @@ class Brain:
     ) -> Reply:
         """Answer the user, using tools as needed. Returns when Claude is done."""
         started = time.monotonic()
-        model = self.model_for(tier)
+
+        # "Heavy guns" and friends pull in Claude for this one request.
+        escalate = False
+        if actor == "user":
+            escalate, text = find_escalation(
+                text, self.settings.get("brain.escalate_phrases",
+                                        DEFAULT_ESCALATION_PHRASES))
+
+        provider, model, brain_label = self.choose_brain(tier, escalate)
         effort = self.settings.effort_for(tier)
 
         # Authorisations only ever come from the user's own words.
@@ -214,13 +299,15 @@ class Brain:
             self.broker.grant_from_user_command(text, source=f"{tier}-command")
             self.broker.note_user_paths(text)
 
-        # Spend guard - checked once per user turn, not per tool call.
-        try:
-            await self.broker.require(Request(CAP_LLM_CALL, model, "think", actor=actor,
-                                              run_id=run_id))
-        except PermissionDenied as denied:
-            return Reply(text=denied.decision.reason, model=model, error="spend-cap",
-                         conversation_id=conversation_id)
+        # Spend guard - only meaningful for a paid brain; local inference is free.
+        if brain_label != "local":
+            try:
+                await self.broker.require(Request(CAP_LLM_CALL, model, "think",
+                                                  actor=actor, run_id=run_id))
+            except PermissionDenied as denied:
+                return Reply(text=denied.decision.reason, model=model,
+                             provider=brain_label, error="spend-cap",
+                             conversation_id=conversation_id)
 
         if conversation_id is None:
             conversation_id = self.memory.start_conversation(
@@ -243,8 +330,11 @@ class Brain:
                               unattended=unattended)
         specs = self.registry.specs(unattended=unattended)
 
-        reply = Reply(model=model, conversation_id=conversation_id)
-        bus.publish(events.THINKING, "", model=model, tier=tier)
+        reply = Reply(model=model, conversation_id=conversation_id,
+                      provider=brain_label)
+        bus.publish(events.THINKING, "", model=model, tier=tier, brain=brain_label)
+        if escalate:
+            log.info("escalated to Claude on request")
 
         for iteration in range(1, max_iterations + 1):
             reply.iterations = iteration
@@ -256,7 +346,7 @@ class Brain:
                 break
 
             try:
-                response = await self.anthropic.turn(
+                response = await provider.turn(
                     model=model,
                     messages=messages,
                     system=system,
@@ -269,6 +359,15 @@ class Brain:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                # A wobbly local model shouldn't end the conversation - hand the
+                # turn to Claude and carry on.
+                if brain_label == "local" and iteration == 1 and self.anthropic.available():
+                    log.warning("local model failed (%s) - falling back to Claude", exc)
+                    bus.publish(events.INFO, "Local model stumbled; using Claude.")
+                    provider, model, brain_label = self.anthropic, self.model_for(tier), "claude"
+                    reply.provider = brain_label
+                    continue
+
                 text_out = self._recover(exc)
                 reply.error = str(exc)
                 reply.text = text_out
@@ -277,7 +376,7 @@ class Brain:
                 self.memory.add_message(conversation_id, "assistant", text_out, model=model)
                 return reply
 
-            completion = completion_from(response, "anthropic")
+            completion = completion_from(response, brain_label)
             self._record_usage(completion, purpose=f"chat:{tier}")
             reply.input_tokens += completion.input_tokens
             reply.output_tokens += completion.output_tokens
@@ -333,7 +432,8 @@ class Brain:
                   "iterations": reply.iterations},
         )
         bus.publish(events.REPLY, reply.text, model=reply.model,
-                    tools=reply.tool_calls, cost=round(reply.cost_usd, 6))
+                    brain=reply.provider, tools=reply.tool_calls,
+                    cost=round(reply.cost_usd, 6))
         return reply
 
     # ------------------------------------------------------------------ #

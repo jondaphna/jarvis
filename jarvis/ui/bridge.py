@@ -8,6 +8,7 @@ signals, which are queued and therefore safe across threads.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import threading
 from typing import Any, Callable, Coroutine
 
@@ -57,7 +58,10 @@ class AsyncRunner(QObject):
         def _callback(fut) -> None:
             try:
                 result, error = fut.result(), None
-            except asyncio.CancelledError:
+            except (asyncio.CancelledError, concurrent.futures.CancelledError):
+                # Stopping voice mode cancels its task; that's normal, not a fault.
+                # Both names are caught because a threadsafe future can raise
+                # either depending on the Python version.
                 result, error = None, None
             except Exception as exc:   # surfaced to the UI, never swallowed
                 result, error = None, exc

@@ -17,6 +17,7 @@ from ..config import Config
 from ..core import events
 from ..core.events import log, setup_logging
 from .bridge import AsyncRunner, EventRelay
+from .floating_orb import FloatingOrb
 from .orb import IDLE, LISTENING, SPEAKING, THINKING, Orb
 from .panels import ActivityPanel, ApprovalsPanel, MissionsPanel, SettingsPanel, muted
 from .theme import ACCENT, DANGER, MUTED, STYLESHEET, SUCCESS, WARNING
@@ -91,6 +92,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(self._status_line())
         self._refresh_badges()
         self._build_tray()
+        self._build_floating_orb()
 
         QShortcut(QKeySequence("Ctrl+L"), self, activated=self._clear_conversation)
         QShortcut(QKeySequence("Ctrl+Space"), self, activated=self._toggle_voice)
@@ -104,6 +106,7 @@ class MainWindow(QMainWindow):
         # Left: the orb and the voice button.
         left = QVBoxLayout()
         self.orb = Orb()
+        self.orb.setMinimumSize(190, 190)
         left.addWidget(self.orb, 1)
 
         self.voice_button = QPushButton("Hold a conversation")
@@ -159,9 +162,12 @@ class MainWindow(QMainWindow):
         talk = QAction("Start listening", self)
         talk.triggered.connect(self._toggle_voice)
         menu.addAction(talk)
+        orb_action = QAction("Show the orb", self)
+        orb_action.triggered.connect(self._show_floating_orb)
+        menu.addAction(orb_action)
         menu.addSeparator()
         quit_action = QAction("Quit", self)
-        quit_action.triggered.connect(QApplication.quit)
+        quit_action.triggered.connect(self._quit_everything)
         menu.addAction(quit_action)
         self.tray.setContextMenu(menu)
         self.tray.setToolTip("JARVIS")
@@ -171,6 +177,8 @@ class MainWindow(QMainWindow):
         self.tray.show()
 
     def _restore(self) -> None:
+        if getattr(self, "floating", None) is not None:
+            self.floating.hide()
         self.showNormal()
         self.raise_()
         self.activateWindow()
@@ -263,6 +271,8 @@ class MainWindow(QMainWindow):
             self.app.voice_loop(wake_word=True,
                                 should_stop=lambda: not self.voice_active),
             done)
+        if getattr(self, "floating", None) is not None and self.floating.isVisible():
+            self.floating.set_state(LISTENING)
 
     # ------------------------------------------------------------------ #
     # Events
@@ -275,6 +285,8 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str, str, object)
     def _on_event(self, kind: str, message: str, data: dict) -> None:
         self.activity_panel.append(kind, message)
+        if getattr(self, "floating", None) is not None and self.floating.isVisible():
+            self.floating.handle_event(kind, message)
 
         if kind == events.LISTENING:
             self.orb.set_state(LISTENING)
@@ -342,6 +354,45 @@ class MainWindow(QMainWindow):
 
         self.app.set_approval_handler(ask)
 
+
+    # ------------------------------------------------------------------ #
+    # The floating orb
+    # ------------------------------------------------------------------ #
+
+    def _build_floating_orb(self) -> None:
+        """A small always-on-top presence that outlives the main window."""
+        self.floating: FloatingOrb | None = None
+        if not self.app.settings.get("ui.floating_orb", True):
+            return
+        self.floating = FloatingOrb(self.app.settings)
+        self.floating.clicked.connect(self._orb_clicked)
+        self.floating.open_requested.connect(self._restore)
+        self.floating.quit_requested.connect(self._quit_everything)
+
+    def _show_floating_orb(self) -> None:
+        if self.floating is None:
+            return
+        self.floating.show()
+        # Closing the window is how most people will leave JARVIS running, so
+        # that's the moment the wake word needs to start working.
+        if self.app.listener.available() and not self.voice_active:
+            self._toggle_voice()
+
+    def _orb_clicked(self) -> None:
+        """Click the orb to talk, without needing the wake word."""
+        if not self.app.listener.available():
+            self._restore()
+            return
+        if self.voice_active:
+            return
+        self._toggle_voice()
+
+    def _quit_everything(self) -> None:
+        if self.floating is not None:
+            self.floating.hide()
+        self.voice_active = False
+        QApplication.quit()
+
     # ------------------------------------------------------------------ #
     # Chrome
     # ------------------------------------------------------------------ #
@@ -369,14 +420,21 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(self._status_line())
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt naming
-        """Closing hides to the tray so scheduled missions keep running."""
-        if getattr(self, "tray", None) is not None and self.tray.isVisible():
+        """Closing leaves the orb on screen, listening, missions still running."""
+        orb = getattr(self, "floating", None)
+        tray = getattr(self, "tray", None)
+
+        if orb is not None or (tray is not None and tray.isVisible()):
             event.ignore()
             self.hide()
-            self.tray.showMessage(
-                "JARVIS is still running",
-                "Missions keep running in the background. Quit from the tray icon.",
-                QSystemTrayIcon.MessageIcon.Information, 4000)
+            if orb is not None:
+                self._show_floating_orb()
+            if tray is not None and tray.isVisible():
+                tray.showMessage(
+                    "JARVIS is still here",
+                    "The orb stays on screen - say the wake word, or click it. "
+                    "Quit from the orb's right-click menu.",
+                    QSystemTrayIcon.MessageIcon.Information, 4000)
             return
         event.accept()
 
@@ -447,6 +505,8 @@ def run_ui() -> int:
         window.tabs.setCurrentIndex(4)
 
     code = qt_app.exec()
+    if getattr(window, "floating", None) is not None:
+        window.floating.hide()
     assistant.shutdown()
     runner.stop()
     return code

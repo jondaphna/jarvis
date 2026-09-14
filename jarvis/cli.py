@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import sys
 from pathlib import Path
+from typing import Any
 
 from . import __version__, paths
 from .config import KEY_SPECS, Config, Settings, Vault, VaultLocked
@@ -449,6 +450,145 @@ def cmd_approvals(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# Audio devices and voice testing
+# --------------------------------------------------------------------------- #
+
+def cmd_devices(args: argparse.Namespace) -> int:
+    """List audio devices, and set which ones JARVIS uses."""
+    from .core.audio import describe_selection, list_devices
+
+    settings = Settings.load()
+
+    if args.set_input or args.set_output:
+        if args.set_input:
+            settings.set("voice.input_device", args.set_input)
+        if args.set_output:
+            settings.set("voice.output_device", args.set_output)
+        settings.save()
+        print(green("\nSaved."))
+
+    if not list_devices():
+        print(red("\nNo audio devices found."))
+        print(dim("  Install the audio support: pip install sounddevice soundfile numpy\n"))
+        return 1
+
+    print(bold("\nMicrophones (input)"))
+    for row in list_devices("input"):
+        mark = green(" (system default)") if row["default_input"] else ""
+        print(f"  [{row['index']:>2}] {row['name']}{mark}")
+
+    print(bold("\nSpeakers (output)"))
+    for row in list_devices("output"):
+        mark = green(" (system default)") if row["default_output"] else ""
+        print(f"  [{row['index']:>2}] {row['name']}{mark}")
+
+    print(bold("\nJARVIS is using"))
+    print(f"  microphone: {cyan(describe_selection(settings.get('voice.input_device'), True))}")
+    print(f"  speakers  : {cyan(describe_selection(settings.get('voice.output_device'), False))}")
+
+    print(dim("""
+  Set them by name - part of the name is enough:
+    jarvis devices --set-output "NVIDIA"
+    jarvis devices --set-input "Lenovo"
+
+  Then check it actually works:
+    jarvis say "testing, one two three"
+    jarvis listen
+"""))
+    return 0
+
+
+def cmd_say(args: argparse.Namespace) -> int:
+    """Speak a line out loud - the fastest way to test audio output."""
+    async def run() -> int:
+        from .core.audio import describe_selection
+        from .core.voice_out import SpeechEngine
+
+        config = Config()
+        speech = SpeechEngine(config)
+        engine = speech.choose_engine()
+
+        print(f"\n  engine  : {cyan(speech.describe())}")
+        print(f"  speakers: {cyan(describe_selection(config.settings.get('voice.output_device'), False))}")
+
+        if engine == "none":
+            print(red("\n  No speech engine installed. Run: pip install edge-tts\n"))
+            return 1
+
+        text = " ".join(args.text) or "Systems online. Can you hear me?"
+        print(dim(f'\n  speaking: "{text}"\n'))
+        await speech.say(text)
+        print(dim("  Done. Heard nothing? Try a different device:"))
+        print(dim("    jarvis devices\n"))
+        return 0
+    return asyncio.run(run())
+
+
+def cmd_listen(args: argparse.Namespace) -> int:
+    """Record one sentence and print the transcript - tests the microphone."""
+    async def run() -> int:
+        from .core.audio import describe_selection
+        from .core.voice_in import VoiceListener
+
+        config = Config()
+        listener = VoiceListener(config)
+
+        print(f"\n  engine    : {cyan(listener.transcriber.describe())}")
+        print(f"  microphone: {cyan(describe_selection(config.settings.get('voice.input_device'), True))}")
+
+        if not listener.available():
+            print(red(f"\n  {listener.why_unavailable()}\n"))
+            return 1
+
+        print(dim("\n  Loading the speech model (first run downloads it)..."))
+        listener.transcriber.warm_up()
+        print(green("\n  Listening - say something.\n"))
+
+        utterance = await listener.listen(max_seconds=15, start_timeout=12)
+        if not utterance:
+            print(red("  I didn't hear anything."))
+            print(dim("  Check the microphone with: jarvis devices\n"))
+            return 1
+
+        print(f"  {bold('heard:')} {cyan(utterance.text)}")
+        print(dim(f"  ({utterance.seconds:.1f}s via {utterance.engine})\n"))
+        return 0
+    return asyncio.run(run())
+
+
+def cmd_config(args: argparse.Namespace) -> int:
+    """Read and write settings without opening the JSON file."""
+    settings = Settings.load()
+
+    if not args.key:
+        import json as _json
+        print(_json.dumps(settings.as_dict(), indent=2))
+        return 0
+
+    if args.value is None:
+        value = settings.get(args.key)
+        if value is None:
+            print(red(f"No setting called '{args.key}'."))
+            return 1
+        print(value if isinstance(value, str) else repr(value))
+        return 0
+
+    raw = args.value
+    parsed: Any = raw
+    if raw.lower() in ("true", "false"):
+        parsed = raw.lower() == "true"
+    elif raw.replace(".", "", 1).replace("-", "", 1).isdigit():
+        parsed = float(raw) if "." in raw else int(raw)
+    elif "," in raw:
+        parsed = [part.strip() for part in raw.split(",") if part.strip()]
+
+    settings.set(args.key, parsed)
+    settings.save()
+    print(green(f"{args.key} = {parsed!r}"))
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # Diagnostics, plugins, keys
 # --------------------------------------------------------------------------- #
 
@@ -597,6 +737,10 @@ def build_parser() -> argparse.ArgumentParser:
   jarvis run morning_brief         run a mission now
   jarvis daemon                    just the scheduler, for overnight work
   jarvis doctor                    what's working and what isn't
+  jarvis devices                   list microphones and speakers
+  jarvis say "hello"               test the voice out loud
+  jarvis listen                    test the microphone
+  jarvis config models.general claude-haiku-4-5    change a setting
 """)
     parser.add_argument("--version", action="version", version=f"JARVIS {__version__}")
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
@@ -662,6 +806,25 @@ def build_parser() -> argparse.ArgumentParser:
     keys.add_argument("name", nargs="?")
     keys.add_argument("value", nargs="?")
     keys.set_defaults(func=cmd_keys)
+
+    devices = sub.add_parser("devices", help="list audio devices and choose them")
+    devices.add_argument("--set-input", metavar="NAME",
+                         help='microphone to use, e.g. "Lenovo"')
+    devices.add_argument("--set-output", metavar="NAME",
+                         help='speakers to use, e.g. "NVIDIA"')
+    devices.set_defaults(func=cmd_devices)
+
+    say = sub.add_parser("say", help="speak a line out loud (tests audio output)")
+    say.add_argument("text", nargs="*")
+    say.set_defaults(func=cmd_say)
+
+    listen = sub.add_parser("listen", help="record one sentence (tests the microphone)")
+    listen.set_defaults(func=cmd_listen)
+
+    config = sub.add_parser("config", help="read or change a setting")
+    config.add_argument("key", nargs="?", help="e.g. models.general")
+    config.add_argument("value", nargs="?", help="omit to read it")
+    config.set_defaults(func=cmd_config)
 
     where = sub.add_parser("where", help="print where JARVIS keeps its files")
     where.set_defaults(func=cmd_where)

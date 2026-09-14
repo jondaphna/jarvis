@@ -23,7 +23,9 @@ SPEAKING = "speaking"
 class Orb(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setMinimumSize(190, 190)
+        # Kept small so the floating orb can be 92px; the main window
+        # gives it room via its layout instead.
+        self.setMinimumSize(64, 64)
         self._phase = 0.0
         self._state = IDLE
         self._level = 0.0          # live mic/speech level, 0-1

@@ -64,6 +64,10 @@ KEY_SPECS: tuple[KeySpec, ...] = (
     KeySpec("DEEPGRAM_API_KEY", "Deepgram (optional faster speech-to-text)",
             "console.deepgram.com", "$200 credit",
             note="Only needed if local Whisper is too slow on your machine."),
+    KeySpec("FISH_API_KEY", "Fish Audio (custom / cloned voice)", "fish.audio",
+            "free credit on signup",
+            note="Use this for a specific JARVIS voice. Paste the voice model id "
+                 "from the fish.audio model page into Settings as well."),
     KeySpec("CARTESIA_API_KEY", "Cartesia (optional ultra-low-latency voice)",
             "play.cartesia.ai", "free monthly characters"),
     KeySpec("ELEVENLABS_API_KEY", "ElevenLabs (optional premium voice)",
@@ -269,15 +273,29 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
     "effort": {"voice": "low", "general": "high", "deep": "xhigh"},
     "provider_order": ["anthropic", "openai", "gemini", "ollama"],
+
+    # --- which brain answers ---------------------------------------------- #
+    "brain": {
+        # "auto" = use the free local model when Ollama is running, else Claude.
+        # true = always local, false = always Claude.
+        "local_first": "auto",
+        "local_model": "llama3.1",
+        # Say any of these and Claude handles that request, however you're set up.
+        "escalate_phrases": ["heavy guns", "big guns", "full power", "max power",
+                             "use claude", "bring in claude", "serious mode"],
+        "escalate_tier": "deep",
+    },
     "ollama_host": "http://127.0.0.1:11434",
     "server_side_fallbacks": True,       # auto-route refusals on Opus 5
 
     # --- voice ----------------------------------------------------------- #
     "voice": {
         "stt_engine": "auto",            # auto | faster-whisper | deepgram | none
-        "tts_engine": "auto",            # auto | edge | cartesia | elevenlabs | pyttsx3 | none
+        "tts_engine": "auto",            # auto | fish | edge | cartesia | elevenlabs | pyttsx3 | none
         "whisper_model": "base.en",      # tiny.en | base.en | small.en | medium.en
         "edge_voice": "en-GB-RyanNeural",
+        "fish_voice_id": "",             # voice model id from fish.audio
+        "fish_model": "s1",              # Fish TTS model: s1 or speech-1.6
         "cartesia_voice_id": "a0e99841-438c-4a64-b679-ae501e7d6091",
         "elevenlabs_voice_id": "21m00Tcm4TlvDq8ikWAM",
         "speaking_rate": "+8%",
@@ -312,7 +330,15 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "smtp_port": 587,
         "smtp_user": "",
     },
-    "ui": {"theme": "dark", "start_minimized": False, "launch_on_login": False},
+    "ui": {
+        "theme": "dark",
+        "start_minimized": False,
+        "launch_on_login": False,
+        # The small always-on-top circle left behind when you close the window.
+        "floating_orb": True,
+        "orb_x": None,
+        "orb_y": None,
+    },
     "telemetry": False,                  # JARVIS never phones home; kept for clarity
 }
 
