@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from jarvis.core.brain import Brain, Reply
-from jarvis.core.tools import ToolRegistry
+
 
 pytestmark = pytest.mark.asyncio
 
