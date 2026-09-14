@@ -38,7 +38,9 @@ TIER_VISION = "vision"
 
 @dataclass
 class Reply:
-    text: str
+    #: Defaults to empty because the agent loop builds a Reply up front and
+    #: fills the text in as turns complete.
+    text: str = ""
     model: str = ""
     conversation_id: int | None = None
     tool_calls: list[str] = field(default_factory=list)
