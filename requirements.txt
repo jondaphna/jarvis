@@ -1,0 +1,43 @@
+# ---------------------------------------------------------------------------
+# JARVIS dependencies
+#
+# The "core" block is all you need for a working install: text chat, the agent
+# loop, missions, the scheduler and the whole permission system.
+# Everything below it is optional and JARVIS tells you when something's missing
+# rather than crashing.
+# ---------------------------------------------------------------------------
+
+# --- core (required) -------------------------------------------------------
+anthropic>=1.0.0          # Claude - the brain
+apscheduler>=3.10.0       # the mission scheduler
+cryptography>=42.0.0      # encrypted API key vault
+requests>=2.31.0          # plugin HTTP calls
+
+# --- desktop app (recommended) ---------------------------------------------
+PyQt6>=6.6.0              # the window, the orb, the dashboard
+
+# --- voice, free tier (recommended) ----------------------------------------
+edge-tts>=6.1.0           # free text-to-speech, no API key, good quality
+faster-whisper>=1.0.0     # free local speech-to-text, runs offline
+sounddevice>=0.4.6        # microphone capture
+soundfile>=0.12.1         # audio playback
+numpy>=1.26.0             # audio maths
+
+# --- computer control ------------------------------------------------------
+mss>=9.0.1                # fast screenshots
+pyautogui>=0.9.54         # keyboard and mouse
+pyperclip>=1.8.2          # clipboard
+psutil>=5.9.0             # machine stats
+
+# --- optional extras -------------------------------------------------------
+PyJWT>=2.8.0              # only needed for the Kling video plugin
+pyttsx3>=2.90             # offline fallback voice
+win10toast>=0.9 ; sys_platform == "win32"   # Windows notifications
+
+# --- packaging / development ----------------------------------------------
+pyinstaller>=6.4.0        # builds JARVIS.exe
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+
+# Note: ffmpeg is NOT a Python package. The video merge plugin needs the
+# ffmpeg binary on your PATH - get it from https://ffmpeg.org/download.html

@@ -1,0 +1,48 @@
+{
+  "id": "morning_brief",
+  "name": "Morning Research Brief",
+  "description": "Every weekday at 7am: research what moved in your niche overnight, boil it down to five things worth acting on, and put it on your desktop.",
+  "schedule": "0 7 * * 1-5",
+  "enabled": false,
+  "tags": ["research", "daily"],
+  "steps": [
+    {
+      "name": "Research overnight developments",
+      "plugin": "web_search",
+      "params": {
+        "query": "AI automation business opportunities this week",
+        "num_results": 12,
+        "depth": "deep"
+      },
+      "output_key": "research"
+    },
+    {
+      "name": "Boil it down to five opportunities",
+      "plugin": "llm",
+      "params": {
+        "system": "You write a sharp morning brief for a busy founder. No filler, no hedging, no restating the question.",
+        "prompt": "Here is this morning's research:\n\n{research}\n\nWrite five bullet points. Each one: what happened, and the specific thing worth doing about it today. Skip anything that is just noise. If nothing is genuinely actionable, say so instead of padding.",
+        "max_tokens": 1500
+      },
+      "output_key": "brief"
+    },
+    {
+      "name": "Save the brief",
+      "plugin": "write_file",
+      "params": {
+        "path": "briefs/morning-brief.md",
+        "content": "# Morning Brief\n\n{brief}\n"
+      },
+      "output_key": "brief_file"
+    },
+    {
+      "name": "Tell me it's ready",
+      "plugin": "notify",
+      "params": {
+        "title": "Morning brief ready",
+        "message": "{brief}",
+        "method": "desktop"
+      }
+    }
+  ]
+}

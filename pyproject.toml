@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jarvis-assistant"
+version = "1.0.0"
+description = "A personal AI that can operate your computer and run missions overnight"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "anthropic>=1.0.0",
+    "apscheduler>=3.10.0",
+    "cryptography>=42.0.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+ui = ["PyQt6>=6.6.0"]
+voice = [
+    "edge-tts>=6.1.0",
+    "faster-whisper>=1.0.0",
+    "sounddevice>=0.4.6",
+    "soundfile>=0.12.1",
+    "numpy>=1.26.0",
+]
+control = ["mss>=9.0.1", "pyautogui>=0.9.54", "pyperclip>=1.8.2", "psutil>=5.9.0"]
+media = ["PyJWT>=2.8.0"]
+dev = ["pytest>=8.0.0", "pytest-asyncio>=0.23.0", "pyinstaller>=6.4.0"]
+all = ["jarvis-assistant[ui,voice,control,media]"]
+
+[project.scripts]
+jarvis = "jarvis.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["jarvis*"]
+
+[tool.setuptools.package-data]
+jarvis = ["builtin_missions/*.json", "plugins/TEMPLATE.py"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
