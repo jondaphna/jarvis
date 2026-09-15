@@ -1,5 +1,10 @@
 # Jarvis, the voice butler
 
+> **Looking for how to use it?** [GUIDE.md](GUIDE.md) is the full manual — every
+> button, everything it can do, and what to do when it misbehaves. This file is
+> just the setup notes.
+
+
 This is [ruxakK/jarvis-voice-butler](https://github.com/ruxakK/jarvis-voice-butler)
 — the project from the video — copied in and wired to your keys. The code is his
 and LiveKit's, unchanged. What I added is the setup: four `.bat` files and a
