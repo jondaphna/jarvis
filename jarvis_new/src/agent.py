@@ -59,6 +59,27 @@ class Assistant(Agent):
                 voice="Enceladus",
                 language="en-GB",
                 tool_response_scheduling=genai_types.FunctionResponseScheduling.WHEN_IDLE,
+                # Why the conversation used to die after a while.
+                #
+                # A Gemini Live session has a time limit. When it is nearly up
+                # the server sends "go away", and the plugin's handler for that
+                # simply closes the session - its own comment says the
+                # reconnection "isn't seamless just yet". So Jarvis went quiet
+                # mid-conversation and stopped being able to do anything, with
+                # nothing on screen to say why.
+                #
+                # Asking for session resumption is what fixes it. The server
+                # then issues a handle, the plugin stores it, and on reconnect
+                # it hands the handle back and carries on where it left off.
+                # Without this the handle is never issued, so there is nothing
+                # to resume with and the session is simply gone.
+                session_resumption=genai_types.SessionResumptionConfig(),
+                # And the other way a long conversation ends: filling the
+                # context window. A sliding window keeps the recent turns and
+                # drops the stalest instead of hitting the ceiling.
+                context_window_compression=genai_types.ContextWindowCompressionConfig(
+                    sliding_window=genai_types.SlidingWindow(),
+                ),
             ),
             # To use a realtime model instead of a voice pipeline, replace the LLM
             # with a RealtimeModel and remove the STT/TTS from the AgentSession

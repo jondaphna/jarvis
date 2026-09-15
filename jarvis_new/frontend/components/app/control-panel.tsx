@@ -974,8 +974,20 @@ function CommandsTab({ state, reload }: { state: State; reload: () => void }) {
 /* The panel                                                                   */
 /* -------------------------------------------------------------------------- */
 
-export function ControlPanel() {
-  const [open, setOpen] = useState(false);
+/* -------------------------------------------------------------------------- */
+/* The settings themselves                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Loads the state and renders the tabs. Used twice: inside the slide-over on
+ * the call screen, and as a whole page at /settings.
+ *
+ * The standalone page exists because the overlay can be covered. The call view
+ * is a full-screen element with children at z-50, so a button floating above it
+ * is one stacking-context change away from being unreachable - which is exactly
+ * what happened. A page at its own URL cannot be covered by anything.
+ */
+export function SettingsBody({ onClose }: { onClose?: () => void }) {
   const [tab, setTab] = useState<Tab>('Rules');
   const [state, setState] = useState<State | null>(null);
   const [error, setError] = useState('');
@@ -990,11 +1002,73 @@ export function ControlPanel() {
   }, []);
 
   useEffect(() => {
-    if (open) load();
-  }, [open, load]);
+    load();
+  }, [load]);
+
+  return (
+    <>
+      <nav className="border-border flex gap-1 overflow-x-auto border-b px-3 py-2">
+        {TABS.map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={`rounded-md px-3 py-1.5 text-sm font-medium whitespace-nowrap transition ${
+              tab === t
+                ? 'bg-secondary text-foreground'
+                : 'text-muted-foreground hover:bg-secondary/60'
+            }`}
+          >
+            {t}
+          </button>
+        ))}
+      </nav>
+
+      <div className="flex-1 overflow-y-auto px-5 py-5">
+        {error && (
+          <div className="border-destructive/30 bg-destructive/10 text-destructive mb-4 space-y-2 rounded-lg border px-4 py-3 text-sm">
+            <p className="font-medium">Can&apos;t reach Jarvis&apos;s settings service.</p>
+            <p className="opacity-90">{error}</p>
+            <p className="opacity-90">
+              It starts with the agent. Run <strong>butler-agent.bat</strong>, or{' '}
+              <strong>butler-doctor.bat</strong> to see what&apos;s wrong.
+            </p>
+            <Btn onClick={load}>Try again</Btn>
+          </div>
+        )}
+        {!state && !error && <p className="text-muted-foreground text-sm">Loading…</p>}
+        {state && (
+          <>
+            {tab === 'Rules' && <RulesTab state={state} reload={load} />}
+            {tab === 'Permissions' && <PermissionsTab state={state} reload={load} />}
+            {tab === 'Voice' && <VoiceTab state={state} reload={load} />}
+            {tab === 'Tasks' && <TasksTab state={state} reload={load} />}
+            {tab === 'AI' && <AITab state={state} reload={load} />}
+            {tab === 'Memory' && <MemoryTab state={state} reload={load} />}
+            {tab === 'Commands' && <CommandsTab state={state} reload={load} />}
+          </>
+        )}
+        {onClose && (
+          <div className="border-border mt-6 border-t pt-4">
+            <Btn onClick={onClose}>Close</Btn>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+export function ControlPanel() {
+  const [open, setOpen] = useState(false);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+      // A keyboard way in, for when the button is covered by something.
+      if (e.key.toLowerCase() === 's' && (e.ctrlKey || e.metaKey) && e.shiftKey) {
+        e.preventDefault();
+        setOpen((was) => !was);
+      }
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
@@ -1004,7 +1078,8 @@ export function ControlPanel() {
       <button
         onClick={() => setOpen(true)}
         aria-label="Open Jarvis settings"
-        className="border-border bg-background/70 hover:bg-secondary fixed top-4 right-4 z-40 rounded-full border p-2.5 shadow-sm backdrop-blur transition"
+        title="Settings (Ctrl+Shift+S)"
+        className="border-border bg-background/90 hover:bg-secondary fixed top-4 right-4 z-[120] rounded-full border p-2.5 shadow-lg backdrop-blur transition"
       >
         <svg
           width="18"
@@ -1020,7 +1095,7 @@ export function ControlPanel() {
       </button>
 
       {open && (
-        <div className="fixed inset-0 z-50 flex justify-end">
+        <div className="fixed inset-0 z-[130] flex justify-end">
           <div
             className="absolute inset-0 bg-black/40 backdrop-blur-sm"
             onClick={() => setOpen(false)}
@@ -1052,47 +1127,7 @@ export function ControlPanel() {
               </button>
             </header>
 
-            <nav className="border-border flex gap-1 overflow-x-auto border-b px-3 py-2">
-              {TABS.map((t) => (
-                <button
-                  key={t}
-                  onClick={() => setTab(t)}
-                  className={`rounded-md px-3 py-1.5 text-sm font-medium whitespace-nowrap transition ${
-                    tab === t
-                      ? 'bg-secondary text-foreground'
-                      : 'text-muted-foreground hover:bg-secondary/60'
-                  }`}
-                >
-                  {t}
-                </button>
-              ))}
-            </nav>
-
-            <div className="flex-1 overflow-y-auto px-5 py-5">
-              {error && (
-                <div className="border-destructive/30 bg-destructive/10 text-destructive mb-4 space-y-2 rounded-lg border px-4 py-3 text-sm">
-                  <p className="font-medium">Can&apos;t reach Jarvis&apos;s settings service.</p>
-                  <p className="opacity-90">{error}</p>
-                  <p className="opacity-90">
-                    It starts with the agent. Run <strong>butler-agent.bat</strong>, or{' '}
-                    <strong>butler-doctor.bat</strong> to see what&apos;s wrong.
-                  </p>
-                  <Btn onClick={load}>Try again</Btn>
-                </div>
-              )}
-              {!state && !error && <p className="text-muted-foreground text-sm">Loading…</p>}
-              {state && (
-                <>
-                  {tab === 'Rules' && <RulesTab state={state} reload={load} />}
-                  {tab === 'Permissions' && <PermissionsTab state={state} reload={load} />}
-                  {tab === 'Voice' && <VoiceTab state={state} reload={load} />}
-                  {tab === 'Tasks' && <TasksTab state={state} reload={load} />}
-                  {tab === 'AI' && <AITab state={state} reload={load} />}
-                  {tab === 'Memory' && <MemoryTab state={state} reload={load} />}
-                  {tab === 'Commands' && <CommandsTab state={state} reload={load} />}
-                </>
-              )}
-            </div>
+            <SettingsBody />
           </aside>
         </div>
       )}

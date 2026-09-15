@@ -311,6 +311,10 @@ class Orb(QWidget):
             starter.triggered.connect(self.start_everything)
             menu.addAction(starter)
 
+        settings = QAction("Settings and instructions", menu)
+        settings.triggered.connect(self.open_settings)
+        menu.addAction(settings)
+
         talk = QAction("Talk in a terminal", menu)
         talk.triggered.connect(lambda: self._launch("butler-talk.bat"))
         menu.addAction(talk)
@@ -329,6 +333,18 @@ class Orb(QWidget):
     # ------------------------------------------------------------------ #
     # Doing things
     # ------------------------------------------------------------------ #
+
+    def open_settings(self) -> None:
+        """Straight to the settings page.
+
+        A third way in, because the gear button lives above the call screen and
+        anything covering the call screen covers it too.
+        """
+        if not self._online:
+            self.start_everything()
+            QTimer.singleShot(2500, lambda: webbrowser.open(f"{WEB_URL}/settings"))
+            return
+        webbrowser.open(f"{WEB_URL}/settings")
 
     def open_jarvis(self) -> None:
         """Start whatever isn't running, then open the window and connect."""
