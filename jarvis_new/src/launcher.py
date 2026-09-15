@@ -68,6 +68,49 @@ SITES = {
     "news": "https://news.google.com",
 }
 
+#: Searching *inside* a site, by URL rather than by driving the page.
+#:
+#: This is what makes "play something on Spotify" or "find Inception on
+#: Netflix" work without a password. The link lands in the browser you are
+#: already signed into, at the right place - no automation, nothing for Google
+#: to block, and no session for Jarvis to hold.
+SEARCHES = {
+    "google": "https://www.google.com/search?q={q}",
+    "youtube": "https://www.youtube.com/results?search_query={q}",
+    "netflix": "https://www.netflix.com/search?q={q}",
+    "spotify": "https://open.spotify.com/search/{q}",
+    "amazon": "https://www.amazon.com/s?k={q}",
+    "gmail": "https://mail.google.com/mail/u/0/#search/{q}",
+    "drive": "https://drive.google.com/drive/search?q={q}",
+    "google drive": "https://drive.google.com/drive/search?q={q}",
+    "maps": "https://www.google.com/maps/search/{q}",
+    "google maps": "https://www.google.com/maps/search/{q}",
+    "reddit": "https://www.reddit.com/search/?q={q}",
+    "github": "https://github.com/search?q={q}",
+    "wikipedia": "https://en.wikipedia.org/w/index.php?search={q}",
+    "x": "https://x.com/search?q={q}",
+    "twitter": "https://x.com/search?q={q}",
+    "instagram": "https://www.instagram.com/explore/search/keyword/?q={q}",
+    "linkedin": "https://www.linkedin.com/search/results/all/?keywords={q}",
+    "ebay": "https://www.ebay.com/sch/i.html?_nkw={q}",
+    "twitch": "https://www.twitch.tv/search?term={q}",
+    "prime video": "https://www.primevideo.com/search/ref=atv_nb_sr?phrase={q}",
+    "disney plus": "https://www.disneyplus.com/search?q={q}",
+}
+
+
+def search_url(site: str, query: str) -> str | None:
+    """A link straight to a site's own search results, or None."""
+    from urllib.parse import quote
+
+    wanted = (site or "").strip().lower()
+    wanted = wanted.removeprefix("my ").removeprefix("the ")
+    template = SEARCHES.get(wanted)
+    if template is None or not (query or "").strip():
+        return None
+    return template.format(q=quote(query.strip()))
+
+
 #: Apps that register a protocol. Faster and more reliable than hunting for an
 #: executable, and works for Microsoft Store installs that have no plain .exe.
 PROTOCOLS = {

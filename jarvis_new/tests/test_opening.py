@@ -1,21 +1,25 @@
-"""The thing that kept failing: "open my Google" opening a stranger's Google.
+"""Opening things: the user's own browser, not a stranger's.
 
-Two separate causes, both represented here.
+The whole history of this bug is in these tests.
 
-1. The browser was started with launch() + new_context(), which is an incognito
-   window - no cookies, no logins, fresh every time. Whatever you asked it to
-   open, you arrived signed out.
-2. open_url's own description told the model to prefer it "whenever the user
-   names a website", while the system prompt said to use a different tool.
-   A tool description wins that argument, so the second tool was never called.
+First the agent opened everything in a Playwright browser built with
+new_context() - an incognito window, signed into nothing - so "open my Google"
+could never be his Google. Then I pointed that browser at a persistent profile
+so it could hold logins, which works technically and fails in practice: Google
+blocks sign-in from an automated browser on purpose, so there was no way to put
+the logins there.
+
+The answer is to stop trying. His own Chrome is already signed in. Opening goes
+there; a site's own search URL covers playing a song or finding a film without
+driving anything; and the hidden browser is kept for the one thing it is good
+at, which is reading a page so Jarvis can answer a question.
 """
 
 import inspect
 
-import browser as browser_module
 import launcher
+import os_tools
 import pytest
-from browser import BrowserManager
 from tools import BrowserTools
 
 
@@ -31,90 +35,95 @@ class Recorder:
 
 
 @pytest.fixture
-def tools() -> tuple[BrowserTools, Recorder]:
-    recorder = Recorder()
-    return BrowserTools(recorder), recorder
+def tools(monkeypatch) -> tuple[os_tools.OSTools, list[str]]:
+    """OS tools with the real browser launch intercepted."""
+    opened: list[str] = []
+    monkeypatch.setattr(launcher, "open_in_browser",
+                        lambda url: opened.append(url) or "chrome")
+    return os_tools.OSTools(), opened
 
 
-class TestOpeningBySpokenName:
-    """You say "open Netflix", not "open https://www.netflix.com"."""
-
+class TestOpeningGoesToYourOwnBrowser:
     async def test_a_bare_site_name_is_resolved(self, tools) -> None:
-        tool, recorder = tools
+        tool, opened = tools
         await tool.open_url._func(tool, None, "netflix")
-        assert recorder.opened == ["https://www.netflix.com"]
+        assert opened == ["https://www.netflix.com"]
 
     async def test_my_prefix_is_ignored(self, tools) -> None:
-        tool, recorder = tools
-        await tool.open_url._func(tool, None, "my spotify")
-        assert recorder.opened == ["https://open.spotify.com"]
+        """"Open my Google" is how people actually say it."""
+        tool, opened = tools
+        await tool.open_url._func(tool, None, "my google")
+        assert opened == ["https://www.google.com"]
 
     async def test_a_real_url_is_left_alone(self, tools) -> None:
-        tool, recorder = tools
+        tool, opened = tools
         await tool.open_url._func(tool, None, "https://example.com/watch?v=1")
-        assert recorder.opened == ["https://example.com/watch?v=1"]
+        assert opened == ["https://example.com/watch?v=1"]
 
-    async def test_something_unknown_is_passed_through(self, tools) -> None:
-        """Rather than swallowed - the browser gives a better error than we would."""
-        tool, recorder = tools
-        await tool.open_url._func(tool, None, "some-internal-tool.local")
-        assert recorder.opened == ["https://some-internal-tool.local"]
+    async def test_a_program_is_refused_with_a_pointer(self, tools) -> None:
+        from livekit.agents.llm import ToolError
+
+        tool, _ = tools
+        with pytest.raises(ToolError, match="open_app"):
+            await tool.open_url._func(tool, None, "task manager")
 
 
-class TestTheBrowserKeepsYouSignedIn:
-    def test_it_uses_a_persistent_profile(self) -> None:
-        """launch() + new_context() is an incognito window. Everything opened in
-        one is signed into nothing, which is the whole bug."""
-        source = inspect.getsource(BrowserManager.start)
-        assert "launch_persistent_context" in source
-        # Checked as a call, not as a mention: the comment above it explains
-        # what new_context() does wrong, and matching on the bare name would
-        # catch the explanation rather than the code.
-        assert "self._browser.new_context()" not in source
-        assert "chromium.launch(" not in source
+class TestActingInsideASite:
+    """Playing a song and finding a film, without a password anywhere."""
 
-    def test_it_asks_for_real_chrome(self) -> None:
-        """Bundled Chromium has no DRM, so Netflix and Spotify load and then
-        refuse to play anything."""
-        assert 'channel="chrome"' in inspect.getsource(BrowserManager.start)
+    async def test_it_opens_the_sites_own_search(self, tools) -> None:
+        tool, opened = tools
+        await tool.search_on_site._func(tool, None, "spotify", "daft punk")
+        assert opened == ["https://open.spotify.com/search/daft%20punk"]
 
-    def test_the_profile_is_a_stable_directory(self, tmp_path, monkeypatch) -> None:
-        first = browser_module.jarvis_profile_dir()
-        second = browser_module.jarvis_profile_dir()
-        assert first == second, "the profile must not move between runs"
-        assert first.exists()
+    async def test_netflix_by_title(self, tools) -> None:
+        tool, opened = tools
+        await tool.search_on_site._func(tool, None, "netflix", "Inception")
+        assert opened == ["https://www.netflix.com/search?q=Inception"]
 
-    def test_it_is_not_your_everyday_chrome_profile(self) -> None:
-        """Chrome refuses to open a profile another Chrome already has, and
-        yours is always open."""
-        assert "Google" not in str(browser_module.jarvis_profile_dir())
+    async def test_a_site_with_no_search_link_says_so(self, tools) -> None:
+        from livekit.agents.llm import ToolError
+
+        tool, _ = tools
+        with pytest.raises(ToolError):
+            await tool.search_on_site._func(tool, None, "some-intranet", "x")
+
+    def test_the_sites_he_actually_asked_for(self) -> None:
+        for site in ("google", "netflix", "spotify", "youtube", "gmail"):
+            assert launcher.search_url(site, "x"), f"{site} should be searchable"
+
+
+class TestTheHiddenBrowserStaysHidden:
+    def test_it_is_headless(self) -> None:
+        """Visible, it was a second window showing a logged-out copy of
+        whatever had just been asked for."""
+        import agent
+
+        source = inspect.getsource(agent.my_agent)
+        assert "BrowserManager(headless=True)" in source
+
+    def test_its_tool_is_not_called_open_anything(self) -> None:
+        """Two tools whose names both read as "open" is how the model picked
+        the wrong one for weeks."""
+        assert hasattr(BrowserTools, "fetch_page")
+        assert not hasattr(BrowserTools, "open_url")
+
+    def test_it_says_plainly_that_the_user_cannot_see_it(self) -> None:
+        # Whitespace-normalised: a docstring wraps, so matching raw text makes
+        # the test fail on reflowing rather than on meaning.
+        doc = " ".join((BrowserTools.fetch_page.__doc__ or "").split())
+        assert "user never sees this" in doc
+        assert "signed into nothing" in doc
+        assert "use open_url" in doc, "it must point at the right tool"
 
 
 class TestOnlyOneOpener:
-    def test_open_url_claims_the_job_without_qualification(self) -> None:
-        doc = BrowserTools.open_url.__doc__ or ""
+    def test_exactly_one_tool_is_named_open_url(self) -> None:
+        names = [t.info.name for t in os_tools.OSTools().tools]
+        names += [t.info.name for t in BrowserTools(Recorder()).tools]
+        assert names.count("open_url") == 1
+
+    def test_the_opener_promises_the_users_own_accounts(self) -> None:
+        doc = os_tools.OSTools.open_url.__doc__ or ""
+        assert "their own accounts" in doc
         assert "THE tool" in doc
-        assert "signed into their own accounts" in doc
-
-    def test_no_second_opening_tool_exists(self) -> None:
-        """Two tools for one job is how the model ends up choosing the wrong
-        one, and the description it reads is not the prompt you wrote."""
-        import os_tools
-
-        names = {t.info.name for t in os_tools.OSTools().tools}
-        assert "open_website" not in names
-
-    def test_open_app_sends_websites_back_to_open_url(self) -> None:
-        doc = None
-        import os_tools
-
-        for tool in os_tools.OSTools().tools:
-            if tool.info.name == "open_app":
-                doc = tool.info.description
-        assert doc and "website" in doc.lower()
-
-
-class TestSiteList:
-    def test_the_sites_he_actually_named(self) -> None:
-        for name in ("google", "netflix", "spotify", "youtube"):
-            assert launcher.site_url(name), f"{name} should be openable by name"

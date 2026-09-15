@@ -34,9 +34,12 @@ def test_consequential_controls_require_confirmation() -> None:
 
 
 def test_direct_navigation_is_prioritized_over_fallback_search() -> None:
+    # open_url used to live here. It now belongs to OSTools, which opens the
+    # user's own signed-in browser; what is left on this class is the hidden
+    # one Jarvis reads pages with, so the name says what it does.
     tools = BrowserTools(BrowserManager(headless=True)).tools
 
-    assert [tool.id for tool in tools[:2]] == ["open_url", "search_the_web"]
+    assert [tool.id for tool in tools[:2]] == ["fetch_page", "search_the_web"]
 
 
 @pytest.mark.asyncio

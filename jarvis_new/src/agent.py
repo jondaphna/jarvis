@@ -90,7 +90,11 @@ async def my_agent(ctx: JobContext):
     # where you can read it.
     serve_in_background()
 
-    browser = BrowserManager(headless=False)
+    # Headless on purpose. This browser exists so Jarvis can read pages and
+    # answer questions; anything meant for you to look at opens in your own
+    # Chrome instead. Visible, it was a second window showing a logged-out
+    # version of whatever you had just asked for.
+    browser = BrowserManager(headless=True)
     ctx.add_shutdown_callback(browser.close)
 
     # One conversation row per call, so every turn is searchable later.

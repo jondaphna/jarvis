@@ -3,27 +3,33 @@ from prompts import AGENT_INSTRUCTIONS
 
 def test_it_acts_before_it_talks() -> None:
     """The template shipped an example that taught the opposite - "Of course
-    sir, I will now do XYZ" - and the agent duly announced everything before
-    doing it."""
+    sir, I will now do XYZ" - and the agent duly announced everything first."""
     assert "# Act first, talk after" in AGENT_INSTRUCTIONS
     assert "I will now do XYZ" not in AGENT_INSTRUCTIONS
 
 
-def test_opening_a_site_goes_to_the_users_own_browser() -> None:
-    """The browser Jarvis drives is the one holding the user's logins, so
-    "open my Google" must go there rather than to a search."""
-    assert "use open_url" in AGENT_INSTRUCTIONS
-    assert "signed into their accounts" in AGENT_INSTRUCTIONS
+def test_opening_goes_to_the_users_own_browser() -> None:
+    assert "Use open_url" in AGENT_INSTRUCTIONS
+    assert "signed in as them" in AGENT_INSTRUCTIONS
 
 
-def test_it_knows_to_keep_working_inside_a_page() -> None:
-    """Opening Spotify and playing something is one flow, not two."""
-    assert "type_text and click" in AGENT_INSTRUCTIONS
+def test_it_knows_how_to_act_inside_a_site() -> None:
+    """Playing a song is a link into Spotify's own search, not a robot
+    clicking through a page it is not signed into."""
+    assert "search_on_site" in AGENT_INSTRUCTIONS
+    assert "already signed in" in AGENT_INSTRUCTIONS
 
 
-def test_programs_and_websites_are_told_apart() -> None:
-    assert "use open_app" in AGENT_INSTRUCTIONS
+def test_the_hidden_browser_is_described_as_hidden() -> None:
+    assert "hidden browser" in AGENT_INSTRUCTIONS
+    assert "The user never sees them" in AGENT_INSTRUCTIONS
 
 
-def test_general_search_still_falls_back_to_the_web() -> None:
-    assert "Only use search_the_web when no website" in AGENT_INSTRUCTIONS
+def test_it_never_handles_a_password() -> None:
+    assert "Never type, guess or ask for a password" in AGENT_INSTRUCTIONS
+
+
+def test_no_stale_tool_names_survive() -> None:
+    """Every rename so far has left an orphan behind that told the model to
+    call something that no longer exists."""
+    assert "open_website" not in AGENT_INSTRUCTIONS

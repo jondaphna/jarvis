@@ -21,7 +21,7 @@ class BrowserTools:
     @property
     def tools(self) -> list:
         return [
-            self.open_url,
+            self.fetch_page,
             self.search_the_web,
             self.read_page,
             self.inspect_page,
@@ -40,12 +40,11 @@ class BrowserTools:
         context: RunContext,
         query: str,
     ) -> dict[str, str]:
-        """Open fallback DuckDuckGo results in the agent-controlled browser.
+        """Search the web invisibly, so YOU can answer a question.
 
-        Use this only when the user needs a general internet search and did not name a
-        website, service, or domain. If the user names a destination, open its official
-        URL directly with open_url instead. Read or inspect the resulting page before
-        answering the user.
+        Only for a general lookup with no site named, where the user wants an
+        answer rather than a window. If they named a site, use search_on_site;
+        if they said "open", use open_url. Read the results before answering.
 
         Args:
             query: A concise DuckDuckGo search query containing all relevant context.
@@ -56,21 +55,19 @@ class BrowserTools:
             raise ToolError(str(exc)) from exc
 
     @function_tool()
-    async def open_url(self, context: RunContext, url: str) -> dict[str, str]:
-        """Open a website. This is THE tool for "open X" - use it every time.
+    async def fetch_page(self, context: RunContext, url: str) -> dict[str, str]:
+        """Load a page invisibly so YOU can read it. The user never sees this.
 
-        This browser is the user's own, signed into their own accounts, so this
-        is what "open my Netflix" or "open my Google" means. They can see it,
-        and you can type and click in it afterwards.
+        This is for answering questions - "what does this article say", "what's
+        the price on that page". It runs in a hidden browser that is signed into
+        nothing.
 
-        Accepts a plain name as well as a URL: "netflix", "my spotify",
-        "youtube", "gmail" all work. Prefer this over searching whenever they
-        name a destination.
-
-        Call it immediately, without announcing it first.
+        It is NOT for showing the user anything. If they said "open" something,
+        they want to look at it themselves: use open_url, which opens their own
+        browser with their own accounts.
 
         Args:
-            url: A site name like "netflix", or a full http/https URL.
+            url: A complete http or https URL.
         """
         try:
             import launcher

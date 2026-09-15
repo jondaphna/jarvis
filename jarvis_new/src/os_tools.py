@@ -61,6 +61,8 @@ class OSTools:
     @property
     def tools(self) -> list:
         return [
+            self.open_url,
+            self.search_on_site,
             self.open_app,
             self.open_folder,
             self.set_volume,
@@ -74,6 +76,67 @@ class OSTools:
     # ------------------------------------------------------------------ #
     # Opening things
     # ------------------------------------------------------------------ #
+
+    @function_tool()
+    async def open_url(self, context: RunContext, site: str) -> str:
+        """Open a website for the user. THE tool for "open X" - use it always.
+
+        This opens their own Chrome, already signed into their own accounts, so
+        "open my Google" is their Google and "open my Netflix" is their Netflix.
+        Nothing to log into and nothing to set up.
+
+        Takes a plain spoken name as well as a URL: "google", "my netflix",
+        "youtube", "gmail" all work.
+
+        Do NOT use fetch_page for this. That one loads pages invisibly for you
+        to read; the user cannot see it and it is signed into nothing.
+
+        Call it immediately, without announcing it first.
+
+        Args:
+            site: A site name like "netflix", or a full http/https URL.
+        """
+        url = launcher.site_url(site)
+        if url is None:
+            raise ToolError(
+                f"{site!r} doesn't look like a website. If it's a program on "
+                f"this computer, use open_app instead.")
+        try:
+            launcher.open_in_browser(url)
+        except Exception as exc:
+            raise ToolError(f"Couldn't open {site}: {exc}") from exc
+        return f"Opened {url}."
+
+    @function_tool()
+    async def search_on_site(self, context: RunContext, site: str,
+                             query: str) -> str:
+        """Search inside a site, in the user's own browser.
+
+        This is how you play music, find a film, or look something up in their
+        own account: it opens the site's own search results directly, already
+        signed in as them.
+
+        Use it for "play daft punk on Spotify", "find Inception on Netflix",
+        "search YouTube for X", "google Y", "find that email about Z".
+
+        Prefer this over search_the_web whenever they name a site. Call it
+        immediately, without announcing it first.
+
+        Args:
+            site: Which site - "spotify", "netflix", "youtube", "google",
+                "gmail", "amazon", "maps" and others are supported.
+            query: What to look for.
+        """
+        url = launcher.search_url(site, query)
+        if url is None:
+            raise ToolError(
+                f"I can't search {site!r} directly. Open it with open_url, or "
+                f"use search_the_web for a general search.")
+        try:
+            launcher.open_in_browser(url)
+        except Exception as exc:
+            raise ToolError(f"Couldn't search {site}: {exc}") from exc
+        return f"Opened {site} search for {query!r}."
 
     @function_tool()
     async def open_app(self, context: RunContext, name: str) -> str:
