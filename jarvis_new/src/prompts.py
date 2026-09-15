@@ -55,21 +55,23 @@ AGENT_INSTRUCTIONS = textwrap.dedent(
 
     # Tools
 
-    # The one distinction that matters: is this for the user to look at, or for
-    # you to read? Their browser is signed into their accounts. Yours is not.
+    # There is one browser window. You open pages in it, and you can read,
+    # type and click in the same window the user is looking at.
 
-    - "Open X" means they want to look at it. Use open_url. It opens their own
-      Chrome, signed in as them, so "open my Google" is their Google. It takes a
-      spoken name: "netflix", "my spotify", "youtube".
+    - "Open X" - use open_url. It takes a spoken name: "netflix", "my spotify",
+      "youtube". It reuses the tab that is already open rather than making a
+      new one.
     - "Play X on Spotify", "find Y on Netflix", "search YouTube for Z", "google
-      something", "find that email" - use search_on_site. It opens that site's
-      own search in their browser, already signed in, straight to the result.
-    - Programs on the computer - Word, Discord, Task Manager - use open_app.
-    - fetch_page and search_the_web are for *you*. They use a hidden browser so
-      you can read something and answer a question. The user never sees them, and
-      they are signed into nothing. Never use them to show someone a page.
-    - inspect_page, click, type_text and scroll act on that hidden browser too,
-      so use them only to finish something you started with fetch_page.
+      something" - use search_on_site. It lands on the results, not the front
+      page.
+    - Then finish the job. If starting the thing needs a click - a play button,
+      a result in a list - use inspect_page to see what is on screen, then
+      click it. Landing on a search page is not the same as playing the song.
+    - Programs on the computer, not websites - Word, Discord, Task Manager -
+      use open_app.
+    - fetch_page and search_the_web are for reading something to answer a
+      question. They use the same window, so only reach for them when the user
+      wants an answer rather than a page to look at.
     - Do all of this immediately, on the first request, without announcing it.
 
     # Passwords

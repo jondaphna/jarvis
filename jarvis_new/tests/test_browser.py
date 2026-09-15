@@ -34,12 +34,11 @@ def test_consequential_controls_require_confirmation() -> None:
 
 
 def test_direct_navigation_is_prioritized_over_fallback_search() -> None:
-    # open_url used to live here. It now belongs to OSTools, which opens the
-    # user's own signed-in browser; what is left on this class is the hidden
-    # one Jarvis reads pages with, so the name says what it does.
+    # Opening comes first, and going somewhere specific inside a site comes
+    # second. The general web search is a fallback behind both of them.
     tools = BrowserTools(BrowserManager(headless=True)).tools
 
-    assert [tool.id for tool in tools[:2]] == ["fetch_page", "search_the_web"]
+    assert [tool.id for tool in tools[:2]] == ["open_url", "search_on_site"]
 
 
 @pytest.mark.asyncio
@@ -97,12 +96,44 @@ class _TestPageHandler(BaseHTTPRequestHandler):
         return
 
 
+def _local_chrome():
+    """A LiveBrowser pointed at whatever Chrome this machine has.
+
+    Jarvis attaches to a real Chrome rather than launching one through
+    Playwright, so this test needs a real browser present. Without one it skips
+    rather than failing: a missing browser is a missing dependency, not a bug
+    in the code under test.
+    """
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from chrome_finder import find_chrome
+    from live_browser import LiveBrowser
+
+    chrome = find_chrome()
+    if not chrome:
+        # Playwright's own build will do; it is Chrome enough to attach to.
+        bundled = sorted(Path("/opt/pw-browsers").glob("chromium-*/chrome-linux/chrome"))
+        chrome = str(bundled[-1]) if bundled else shutil.which("chromium")
+    if not chrome:
+        pytest.skip("no Chrome or Chromium installed to attach to")
+
+    return LiveBrowser(
+        port=9457,
+        chrome_path=chrome,
+        profile=Path(tempfile.mkdtemp(prefix="jarvis-test-chrome-")),
+        extra_args=["--no-sandbox", "--headless=new",
+                    "--proxy-server=direct://", "--proxy-bypass-list=*"],
+    )
+
+
 @pytest.mark.asyncio
 async def test_inspect_and_interact_with_local_page() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), _TestPageHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    manager = BrowserManager(headless=True)
+    manager = BrowserManager(live=_local_chrome())
 
     try:
         await manager.open_url(f"http://127.0.0.1:{server.server_port}")

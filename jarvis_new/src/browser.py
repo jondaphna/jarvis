@@ -13,11 +13,12 @@ from urllib.parse import urlparse
 from playwright.async_api import (
     Locator,
     Page,
-    async_playwright,
 )
 from playwright.async_api import (
     TimeoutError as PlaywrightTimeoutError,
 )
+
+from live_browser import LiveBrowser, LiveBrowserError
 
 
 class BrowserError(Exception):
@@ -165,84 +166,57 @@ def jarvis_profile_dir() -> Path:
 
 
 class BrowserManager:
-    """The browser Jarvis drives - and the one you are signed into."""
+    """The window Jarvis works in - the same one you are looking at.
+
+    This used to start a browser of its own. That browser was signed into
+    nothing, so anything it opened arrived logged out, and it was a second
+    window besides. Now it attaches to the visible Chrome that LiveBrowser
+    manages, which means every tool below - clicking, typing, reading, going
+    back - acts on the page in front of you, in the tab that is already open.
+    """
 
     def __init__(self, *, headless: bool = False, timeout_ms: int = 15_000,
-                 profile_dir: Path | None = None) -> None:
-        self._headless = headless
+                 live: LiveBrowser | None = None) -> None:
+        # `headless` is kept because the template's tests construct with it.
+        # It no longer means anything: the window belongs to the user and is
+        # always visible.
         self._timeout_ms = timeout_ms
-        self._profile_dir = profile_dir or jarvis_profile_dir()
-        self._playwright = None
-        self._browser = None
-        self._context = None
+        self._live = live or LiveBrowser()
         self._page: Page | None = None
         self._lock = asyncio.Lock()
 
-    async def start(self) -> None:
-        if self._page is not None:
-            return
-
-        self._playwright = await async_playwright().start()
-
-        # A *persistent* context, not launch() + new_context(). The latter is
-        # an incognito window with no history and no cookies, which is why
-        # every site opened as a logged-out stranger.
-        #
-        # channel="chrome" asks for real Chrome rather than the bundled
-        # Chromium. That matters beyond familiarity: Chromium ships without
-        # the DRM that Netflix, Spotify and Prime Video require, so on the
-        # bundled build those sites load and simply refuse to play anything.
-        options = {
-            "user_data_dir": str(self._profile_dir),
-            "headless": self._headless,
-            "no_viewport": True,
-            "args": ["--start-maximized"],
-        }
-        try:
-            self._context = await self._playwright.chromium.launch_persistent_context(
-                channel="chrome", **options)
-        except Exception:
-            # No Chrome installed: better the bundled browser, minus the DRM,
-            # than no browser at all.
-            self._context = await self._playwright.chromium.launch_persistent_context(
-                **options)
-
-        pages = self._context.pages
-        self._page = pages[0] if pages else await self._context.new_page()
-        self._page.set_default_timeout(self._timeout_ms)
-        if not self._headless:
-            await _bring_page_window_to_front(self._page)
-
     @property
-    def profile_dir(self) -> Path:
-        return self._profile_dir
+    def live(self) -> LiveBrowser:
+        return self._live
+
+    async def start(self) -> None:
+        await self._live.attach()
+
+    async def _get_page(self) -> Page:
+        """Whatever tab is in front of the user right now."""
+        page = await self._live.page()
+        page.set_default_timeout(self._timeout_ms)
+        self._page = page
+        return page
 
     async def close(self) -> None:
+        """Let go of the window without closing it - it is the user's."""
         async with self._lock:
-            # A persistent context owns its browser, so closing it is enough -
-            # and there is no separate browser object to close.
-            if self._context is not None:
-                await self._context.close()
-            if self._playwright is not None:
-                await self._playwright.stop()
-
+            await self._live.close()
             self._page = None
-            self._context = None
-            self._browser = None
-            self._playwright = None
 
     async def open_url(self, url: str) -> dict[str, str]:
+        """Navigate the tab the user is looking at. Never opens a new one."""
         self._validate_url(url)
+        try:
+            await self._live.goto(url)
+        except LiveBrowserError as exc:
+            raise BrowserError(str(exc)) from exc
+        except PlaywrightTimeoutError as exc:
+            raise BrowserError("The page took too long to load.") from exc
         page = await self._get_page()
-
         async with self._lock:
-            try:
-                await page.goto(url, wait_until="domcontentloaded")
-                return await self._page_summary(page)
-            except PlaywrightTimeoutError as exc:
-                raise BrowserError("The page took too long to load.") from exc
-            except Exception as exc:
-                raise BrowserError(f"I could not open that page: {exc}") from exc
+            return await self._page_summary(page)
 
     async def read_page(self, *, max_chars: int = 12_000) -> dict[str, str | bool]:
         page = await self._get_page()
@@ -389,12 +363,6 @@ class BrowserManager:
         async with self._lock:
             await page.keyboard.press(key)
             return {"key": key, "url": page.url}
-
-    async def _get_page(self) -> Page:
-        if self._page is None:
-            await self.start()
-        assert self._page is not None
-        return self._page
 
     @staticmethod
     def _validate_url(url: str) -> None:

@@ -21,6 +21,8 @@ class BrowserTools:
     @property
     def tools(self) -> list:
         return [
+            self.open_url,
+            self.search_on_site,
             self.fetch_page,
             self.search_the_web,
             self.read_page,
@@ -33,6 +35,63 @@ class BrowserTools:
             self.scroll,
             self.press_key,
         ]
+
+    @function_tool()
+    async def open_url(self, context: RunContext, site: str) -> dict[str, str]:
+        """Open a website. THE tool for "open X" - use it every time.
+
+        It opens in the window the user is watching, reusing the tab that is
+        already there rather than piling up new ones. Once it is open you can
+        read it, type in it and click in it.
+
+        Takes a spoken name as well as a URL: "netflix", "my spotify",
+        "youtube", "gmail" all work.
+
+        Call it immediately, without announcing it first.
+
+        Args:
+            site: A site name like "netflix", or a full http/https URL.
+        """
+        import launcher
+
+        url = launcher.site_url(site)
+        if url is None:
+            raise ToolError(
+                f"{site!r} doesn't look like a website. If it's a program on "
+                f"this computer, use open_app instead.")
+        try:
+            return await self.browser.open_url(url)
+        except BrowserError as exc:
+            raise ToolError(str(exc)) from exc
+
+    @function_tool()
+    async def search_on_site(self, context: RunContext, site: str,
+                             query: str) -> dict[str, str]:
+        """Go straight to a result inside a site - a song, a film, an email.
+
+        Use it for "play daft punk on Spotify", "find Inception on Netflix",
+        "search YouTube for X", "google Y", "find that email about Z". It lands
+        on the search results rather than the front page, in the same window.
+
+        If the page then needs a click to actually start something, inspect it
+        and click - do not stop at the results.
+
+        Args:
+            site: "spotify", "netflix", "youtube", "google", "gmail",
+                "amazon", "maps" and others.
+            query: What to look for.
+        """
+        import launcher
+
+        url = launcher.search_url(site, query)
+        if url is None:
+            raise ToolError(
+                f"I can't search {site!r} directly. Open it with open_url and "
+                f"use its own search box.")
+        try:
+            return await self.browser.open_url(url)
+        except BrowserError as exc:
+            raise ToolError(str(exc)) from exc
 
     @function_tool()
     async def search_the_web(
