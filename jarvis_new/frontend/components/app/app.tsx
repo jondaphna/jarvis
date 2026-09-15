@@ -7,6 +7,7 @@ import { WarningIcon } from '@phosphor-icons/react/dist/ssr';
 import type { AppConfig } from '@/app-config';
 import { AgentSessionProvider } from '@/components/agents-ui/agent-session-provider';
 import { StartAudioButton } from '@/components/agents-ui/start-audio-button';
+import { ControlPanel } from '@/components/app/control-panel';
 import { JarvisBackground } from '@/components/app/jarvis-background';
 import { ViewController } from '@/components/app/view-controller';
 import { Toaster } from '@/components/ui/sonner';
@@ -43,6 +44,7 @@ export function App({ appConfig }: AppProps) {
     <AgentSessionProvider session={session}>
       <AppSetup />
       <JarvisBackground />
+      <ControlPanel />
       <main className="relative z-10 grid h-svh grid-cols-1 place-content-center">
         <ViewController appConfig={appConfig} />
       </main>
