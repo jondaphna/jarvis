@@ -362,3 +362,111 @@ class TestServerInstall:
         monkeypatch.setattr(local, "find_binary", lambda: None)
         with pytest.raises(FileNotFoundError, match="isn't installed"):
             local.start()
+
+
+class TestWorkerStartup:
+    """The bugs that made `jarvis realtime` print success and do nothing."""
+
+    def test_the_worker_is_not_run_through_livekits_cli(self):
+        """LiveKit's cli.run_app parses sys.argv - it ate our own arguments and
+        died with "No such command 'realtime'"."""
+        import inspect
+
+        from jarvis.realtime import agent
+
+        source = inspect.getsource(agent.run)
+        # The docstring explains why it isn't used, so match the CALL, not
+        # the mention.
+        assert "cli.run_app(" not in source
+        assert "server.run(" in source
+
+    def test_the_coroutine_is_awaited(self):
+        """AgentServer.run is async; calling it bare returns a coroutine and
+        silently does nothing."""
+        import inspect
+
+        from livekit.agents import AgentServer
+
+        from jarvis.realtime import agent
+
+        assert inspect.iscoroutinefunction(AgentServer.run)
+        assert "asyncio.run(server.run" in inspect.getsource(agent.run)
+
+    def test_no_agent_name_so_it_joins_the_room(self):
+        """Naming the agent switches LiveKit to explicit dispatch, and it then
+        never joins the room the browser opened."""
+        import inspect
+
+        from jarvis.realtime import agent
+
+        source = inspect.getsource(agent.build_server)
+        assert "rtc_session(agent_name" not in source
+        assert "@server.rtc_session" in source
+
+    def test_credentials_reach_the_worker_environment(self, settings,
+                                                      monkeypatch):
+        """The worker reads LiveKit settings from the environment, not the vault."""
+        import os
+
+        from jarvis.config import Config
+        from jarvis.realtime import agent
+
+        for name in ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"):
+            monkeypatch.delenv(name, raising=False)
+
+        config = Config()
+        config.vault.set("LIVEKIT_URL", "wss://example.livekit.cloud")
+        config.vault.set("LIVEKIT_API_KEY", "key123")
+        config.vault.set("LIVEKIT_API_SECRET", "secret456789abcdef")
+
+        agent.export_credentials(config)
+        assert os.environ["LIVEKIT_URL"] == "wss://example.livekit.cloud"
+        assert os.environ["LIVEKIT_API_KEY"] == "key123"
+
+    def test_preflight_reports_an_unreachable_server(self, settings, monkeypatch):
+        """Otherwise the worker retries in the background while the terminal
+        says everything is fine."""
+        from jarvis.config import Config
+        from jarvis.realtime import agent
+
+        for name in ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"):
+            monkeypatch.delenv(name, raising=False)
+
+        config = Config()
+        config.vault.set("LIVEKIT_URL", "ws://127.0.0.1:1")   # nothing listens
+        config.vault.set("LIVEKIT_API_KEY", "key")
+        config.vault.set("LIVEKIT_API_SECRET", "secret")
+
+        trouble = agent.preflight(config)
+        assert "Couldn't reach" in trouble
+        assert "ws://127.0.0.1:1" in trouble
+
+    def test_preflight_passes_against_a_live_server(self, settings, monkeypatch):
+        import http.server
+        import threading
+
+        from jarvis.config import Config
+        from jarvis.realtime import agent
+
+        class Quiet(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"OK")
+
+            def log_message(self, *a):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Quiet)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        port = server.server_address[1]
+        try:
+            for name in ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"):
+                monkeypatch.delenv(name, raising=False)
+            config = Config()
+            config.vault.set("LIVEKIT_URL", f"ws://127.0.0.1:{port}")
+            config.vault.set("LIVEKIT_API_KEY", "key")
+            config.vault.set("LIVEKIT_API_SECRET", "secret")
+            assert agent.preflight(config) == ""
+        finally:
+            server.shutdown()

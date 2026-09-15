@@ -153,7 +153,10 @@ def build_server():
     setup_logging()
     server = AgentServer()
 
-    @server.rtc_session(agent_name="jarvis")
+    # No agent_name on purpose. Setting one switches LiveKit to *explicit
+    # dispatch*, and the agent then sits there never joining the room the
+    # browser just opened - which looks exactly like "it doesn't work".
+    @server.rtc_session
     async def entrypoint(ctx: JobContext) -> None:
         ctx.log_context_fields = {"room": ctx.room.name}
 
@@ -177,9 +180,74 @@ def _shutdown(app):
     return close
 
 
-def run() -> int:
-    """Run the agent worker in the foreground."""
-    from livekit.agents import cli
+def export_credentials(config) -> None:
+    """The worker reads LiveKit credentials from the environment, so put the
+    vault's copies there for this process only."""
+    import os
 
-    cli.run_app(build_server())
+    from .tokens import credentials
+
+    url, key, secret = credentials(config)
+    os.environ["LIVEKIT_URL"] = url
+    os.environ["LIVEKIT_API_KEY"] = key
+    os.environ["LIVEKIT_API_SECRET"] = secret
+
+
+def preflight(config) -> str:
+    """Check the LiveKit server answers before starting a worker against it.
+
+    Without this the worker retries in the background forever while the
+    terminal cheerfully says "Realtime voice is up" - so the failure is
+    invisible until you wonder why nothing happens.
+    """
+    import urllib.error
+    import urllib.request
+    from urllib.parse import urlparse
+
+    from .tokens import credentials
+
+    url, _, _ = credentials(config)
+    parsed = urlparse(url)
+    scheme = "https" if parsed.scheme in ("wss", "https") else "http"
+    port = f":{parsed.port}" if parsed.port else ""
+    health = f"{scheme}://{parsed.hostname}{port}/"
+
+    # Never through a proxy: this is usually a server on this machine.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(health, timeout=6):
+            return ""
+    except urllib.error.HTTPError:
+        return ""                     # answered, which is all we needed
+    except Exception as exc:
+        return (f"Couldn't reach the LiveKit server at {url} ({exc}).\n"
+                f"  If you're using --local, make sure it started.\n"
+                f"  If you're using LiveKit Cloud, check LIVEKIT_URL.")
+
+
+def run(config=None) -> int:
+    """Run the agent worker in the foreground.
+
+    Deliberately NOT livekit's `cli.run_app`: that builds a Click app over
+    `sys.argv`, so it tried to parse JARVIS's own arguments and died with
+    "No such command 'realtime'". It is also deprecated upstream.
+    """
+    if config is not None:
+        export_credentials(config)
+
+    # AgentServer.run is a coroutine - calling it without awaiting returns a
+    # coroutine object and does nothing at all, silently.
+    server = build_server()
+    try:
+        asyncio.run(server.run(devmode=True))
+    except KeyboardInterrupt:
+        pass
+    except RuntimeError as exc:
+        if "failed to connect" in str(exc).lower():
+            log.error("the agent could not reach LiveKit: %s", exc)
+            bus.publish(events.ERROR,
+                        "The agent couldn't reach the LiveKit server. Check that "
+                        "it's running and that LIVEKIT_URL is right.")
+            return 1
+        raise
     return 0

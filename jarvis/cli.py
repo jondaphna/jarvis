@@ -1060,7 +1060,15 @@ def cmd_realtime(args: argparse.Namespace) -> int:
         from .realtime.agent import run
         print(BANNER)
         print(dim("  Agent worker running. Ctrl-C to stop.\n"))
-        return run()
+        return run(config)
+
+    # Fail loudly here rather than letting the worker retry invisibly.
+    from .realtime.agent import preflight
+
+    trouble = preflight(config)
+    if trouble:
+        print(red(f"\n  {trouble}\n"))
+        return 1
 
     web, pin, scheme = rt_server.serve(config, port=args.port, lan=args.lan)
     print(BANNER)
@@ -1093,7 +1101,7 @@ def cmd_realtime(args: argparse.Namespace) -> int:
 
     try:
         from .realtime.agent import run
-        return run()
+        return run(config)
     except KeyboardInterrupt:
         return 0
     finally:
