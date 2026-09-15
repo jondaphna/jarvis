@@ -138,6 +138,22 @@ Say these exact words, get exactly those words back. No thinking, no variation.
 
 ## 4. Everything it can do
 
+### Thinking
+Jarvis has two halves, on purpose.
+
+The **voice** is Gemini Live — it hears you and answers in under a second,
+which is what makes conversation feel natural. It is fast and shallow by design.
+
+The **thinking** is Claude Opus 5. Anything where being right matters more than
+being quick — working out how to do something, writing a script or an email,
+analysing, diagnosing what went wrong — gets handed over, and the voice speaks
+the result. It says "let me think about that" first, because it takes a few
+seconds.
+
+You pick which AI thinks, in the **AI tab**. It needs a Claude key; without one
+it answers off the cuff like before. You can switch it off entirely in
+**Permissions**.
+
 ### Conversation
 - Real-time voice, both directions, with proper echo cancellation
 - Interrupt it mid-sentence; it stops and listens

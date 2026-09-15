@@ -72,6 +72,11 @@ CAPABILITIES: tuple[Capability, ...] = (
         "Save and recall what you tell it, and search past conversations.",
         ("remember", "recall", "forget", "search_memory")),
     Capability(
+        "reasoning", "Think hard about things",
+        "Hand difficult questions, plans and writing to Claude instead of "
+        "answering off the cuff. Slower, and much better.",
+        ("think",)),
+    Capability(
         "power", "Lock, sleep, restart, shut down",
         "Power actions. It always asks out loud first, and one yes covers "
         "exactly one action.",

@@ -8,6 +8,19 @@ are a week, and one I'd argue against.
 
 ## Done
 
+### The brain — two halves instead of one ✅
+
+The complaint was "it can do basic things but can't manage to do stuff". That
+was a model problem, not a code problem: a realtime speech model is tuned for
+sub-second replies, not for holding several steps in mind.
+
+So the voice keeps the ears and mouth, and hard problems go to Claude Opus 5
+with a focused brief per kind of work — planning, research, writing,
+engineering. The specialist modes are the useful half of a multi-agent design
+without the expensive half: a router that classifies *every* message costs a
+model call before anything happens, even on "what's the time". Here the voice
+delegates only when it already knows it needs to, so simple turns stay instant.
+
 ### 11. Settings & permissions sandbox matrix ✅
 
 All three parts are in the settings panel now.

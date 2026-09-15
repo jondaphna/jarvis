@@ -58,6 +58,7 @@ type State = {
   plugins: Record<string, string>;
   browser_profiles: BrowserProfile[];
   permissions: Permission[];
+  thinking_models: { id: string; label: string }[];
   authorisations: Authorisation[];
 };
 
@@ -711,6 +712,36 @@ function AITab({ state, reload }: { state: State; reload: () => void }) {
         Every AI this build can use. Paste a key to switch one on — they&apos;re encrypted in your
         vault, never in a file you might share.
       </p>
+
+      <div className="border-border bg-card/50 space-y-2 rounded-lg border p-3">
+        <p className="text-sm font-medium">Which AI does the hard thinking?</p>
+        <p className="text-muted-foreground text-xs">
+          The voice stays fast whatever you pick. This is the one it hands difficult questions,
+          plans and writing to.
+        </p>
+        <select
+          className={inputClass}
+          defaultValue={
+            (state.settings?.thinking as { model?: string } | undefined)?.model ?? 'claude-opus-5'
+          }
+          onChange={async (e) => {
+            await api('settings', {
+              method: 'POST',
+              body: JSON.stringify({ 'thinking.model': e.target.value }),
+            });
+            reload();
+          }}
+        >
+          {state.thinking_models?.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+        <p className="text-muted-foreground text-xs">
+          Needs a Claude key below. Without one it falls back to answering off the cuff.
+        </p>
+      </div>
 
       <div className="space-y-2">
         {state.providers.map((p) => (

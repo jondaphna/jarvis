@@ -338,6 +338,16 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "daily_spend_cap_usd": 5.0,      # LLM spend guard; 0 disables the cap
     },
 
+    # --- the thinking half ------------------------------------------------ #
+    # The voice model is fast and shallow by design. Anything needing real
+    # reasoning is handed to Claude instead. Effort starts high because the
+    # complaint this answers is "not smart enough" - lower it if you would
+    # rather have the seconds back.
+    "thinking": {
+        "model": "claude-opus-5",
+        "effort": "high",
+    },
+
     # --- what Jarvis is allowed to do ------------------------------------- #
     # Switches, set from the Permissions tab. Anything false has its tools
     # removed before the model ever sees them, so it cannot try and cannot be
@@ -351,6 +361,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "machine": True,
         "memory": True,
         "power": False,
+        "reasoning": True,
     },
 
     # --- which browser profile "open my Netflix" should use ---------------- #

@@ -21,6 +21,7 @@ from permissions import filter_tools
 from permissions import summary as permission_summary
 from personalise import extra_instructions, load_rules, load_settings
 from prompts import AGENT_INSTRUCTIONS
+from thinker import Thinker
 from tools import BrowserTools
 
 load_dotenv(".env.local")
@@ -35,6 +36,9 @@ class Assistant(Agent):
         # any of it can't be loaded the call still happens, just less personal.
         self.memory = memory or JarvisMemory()
         self.os_tools = OSTools()
+        # The smart half. The voice stays fast; this is where hard
+        # problems go.
+        self.thinker = Thinker()
         self._settings = load_settings()
         self._rules = load_rules(self._settings)
         self._end_call_tool = EndCallTool(
@@ -76,6 +80,7 @@ class Assistant(Agent):
                 *self.browser_tools.tools,
                 *self.memory.tools,
                 *self.os_tools.tools,
+                *self.thinker.tools,
                 *self._end_call_tool.tools,
             ], self._settings),
         )
