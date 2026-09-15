@@ -61,7 +61,6 @@ class OSTools:
     @property
     def tools(self) -> list:
         return [
-            self.open_website,
             self.open_app,
             self.open_folder,
             self.set_volume,
@@ -75,34 +74,6 @@ class OSTools:
     # ------------------------------------------------------------------ #
     # Opening things
     # ------------------------------------------------------------------ #
-
-    @function_tool()
-    async def open_website(self, context: RunContext, name: str) -> str:
-        """Open a website in the user's own browser, where they are signed in.
-
-        This is the right tool whenever they say "open" and name a site -
-        YouTube, Netflix, Gmail, their bank. It opens in their real Chrome with
-        their real logins, which is what they mean by "my Netflix".
-
-        Do NOT use open_url for this. That opens a separate automation browser
-        that is signed into nothing, which the user cannot see properly and
-        which is only for when *you* need to read or click a page yourself.
-
-        Call it immediately, without announcing it first.
-
-        Args:
-            name: A site name like "youtube" or "my netflix", or a full URL.
-        """
-        url = launcher.site_url(name)
-        if url is None:
-            raise ToolError(
-                f"{name!r} doesn't look like a website. If it's a program on "
-                f"the computer, use open_app instead.")
-        try:
-            launcher.open_in_browser(url)
-        except Exception as exc:
-            raise ToolError(f"Couldn't open {name}: {exc}") from exc
-        return f"Opened {url}."
 
     @function_tool()
     async def open_app(self, context: RunContext, name: str) -> str:
@@ -125,12 +96,13 @@ class OSTools:
 
         found = launcher.resolve_app(wanted)
         if found is None:
-            # Some things are only a website - Netflix, for one. Rather than
-            # fail, do the thing they plainly wanted.
-            url = launcher.site_url(wanted)
-            if url:
-                launcher.open_in_browser(url)
-                return f"{name} isn't installed here, so I opened it in the browser."
+            # Netflix and the like are websites, not programs. Say so, and let
+            # the model open it properly - going to the browser from here would
+            # use a different, signed-out one.
+            if launcher.site_url(wanted):
+                raise ToolError(
+                    f"{name} isn't a program on this computer - it's a website. "
+                    f"Use open_url instead.")
             raise ToolError(
                 f"I can't find {name} on this computer. Tell me the exact name "
                 f"it has in the Start menu and I'll use that.")

@@ -57,16 +57,29 @@ class BrowserTools:
 
     @function_tool()
     async def open_url(self, context: RunContext, url: str) -> dict[str, str]:
-        """Open a public webpage directly in the agent-controlled browser.
+        """Open a website. This is THE tool for "open X" - use it every time.
 
-        Prefer this over DuckDuckGo whenever the user names a website, service, domain,
-        or specific destination. Use the destination's official URL.
+        This browser is the user's own, signed into their own accounts, so this
+        is what "open my Netflix" or "open my Google" means. They can see it,
+        and you can type and click in it afterwards.
+
+        Accepts a plain name as well as a URL: "netflix", "my spotify",
+        "youtube", "gmail" all work. Prefer this over searching whenever they
+        name a destination.
+
+        Call it immediately, without announcing it first.
 
         Args:
-            url: A complete http or https URL to open.
+            url: A site name like "netflix", or a full http/https URL.
         """
         try:
-            return await self.browser.open_url(url)
+            import launcher
+
+            resolved = launcher.site_url(url) or url
+        except Exception:
+            resolved = url
+        try:
+            return await self.browser.open_url(resolved)
         except BrowserError as exc:
             raise ToolError(str(exc)) from exc
 

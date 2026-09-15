@@ -33,6 +33,7 @@ it the other way round and the page connects to nothing.
 
 | Button | What it does |
 |---|---|
+| **`butler-signin.bat`** | **Run this once.** Sign in to your accounts so "open my Google" is yours. |
 | **`butler-doctor.bat`** | **Something's wrong?** Checks everything and says what. Start here. |
 | **`butler-check.bat`** | Are my keys still valid? Asks Google and LiveKit directly. |
 | **`butler-keys.bat`** | Re-enter your keys. |
@@ -41,6 +42,29 @@ it the other way round and the page connects to nothing.
 | **`butler-restore.bat`** | Go back to a version that worked. |
 
 ---
+
+## 1b. Sign in, once
+
+**Do this before anything else.** Run **`butler-signin.bat`**.
+
+Jarvis drives its own browser. Chrome won't let two programs share a profile and
+yours is always open, so Jarvis keeps a separate one — and it starts out signed
+into nothing. That is why "open my Google" used to show a stranger's Google.
+
+That browser keeps cookies like any other. Sign in once to whatever you want it
+to reach:
+
+- google.com — so it's *your* Google
+- netflix.com — so it can put a film on
+- open.spotify.com — so it can play your music
+- youtube.com, gmail.com, anything else
+
+Say yes when a site offers to keep you signed in. Close the window when you're
+done. You never have to do it again.
+
+After that, "open my Netflix and put on something" works — it opens your
+Netflix, and because Jarvis drives that window, it can search and click inside
+it too.
 
 ## 2. Talking to it
 
@@ -132,15 +156,14 @@ Say these exact words, get exactly those words back. No thinking, no variation.
 - You can edit or delete any of it
 
 ### Opening things
-- **Websites in your own Chrome** — "open YouTube", "open my Netflix", "open
-  Gmail". Your browser, your logins.
+- **Websites, signed in as you** — "open YouTube", "open my Netflix", "open
+  Gmail". After `butler-signin.bat`, these are your accounts.
+- **And it can work inside them** — "open Spotify and play something", "search
+  YouTube for X", "put a film on". It drives that window, so it can type and
+  click as well as open.
 - **Apps** — "open Spotify", "open Word", "open task manager". Found through your
   Start Menu, so anything you have installed works by the name you'd actually say.
 - If something isn't installed but exists as a website, it opens that instead.
-
-There are two browsers, and it matters: your Chrome is where you're signed in,
-and a separate automation browser is what Jarvis reads and clicks pages in. "Open
-X" always means yours.
 
 ### Your computer
 - **Open folders** — "open my downloads"
@@ -229,6 +252,8 @@ just the crash; the top says why.
 | It can't hear you | Wrong microphone. `butler-devices.bat`, then `butler-talk.bat 1 4`. |
 | It opens in Edge and doesn't work | Install Chrome. The orb uses Chrome specifically. |
 | It forgot what you talked about | `butler-doctor.bat` — it prints what is actually stored. |
+| A site says you're signed out | Run `butler-signin.bat` and sign in again. |
+| Netflix or Spotify won't play | Chrome must be installed — the bundled browser has no DRM. |
 | Settings panel says "control service isn't running" | Run `butler-api.bat`. |
 
 **Check the agent window.** You should see `registered worker`, then a job arriving

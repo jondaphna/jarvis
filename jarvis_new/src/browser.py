@@ -6,6 +6,7 @@ import re
 import sys
 import time
 import uuid
+from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
 
@@ -140,12 +141,37 @@ async def _bring_page_window_to_front(page: Page) -> None:
                 )
 
 
-class BrowserManager:
-    """Own one isolated, visible browser for a LiveKit room."""
+def jarvis_profile_dir() -> Path:
+    """Where Jarvis's browser keeps your logins.
 
-    def __init__(self, *, headless: bool = False, timeout_ms: int = 15_000) -> None:
+    A real directory that survives restarts. This is the whole difference
+    between "open my Google" and "open a Google": a browser started without one
+    is a fresh, signed-out stranger every single time.
+
+    It is deliberately *not* your everyday Chrome profile. Chrome refuses to
+    open a profile that another Chrome already has, so pointing at yours would
+    fail whenever your browser happened to be open - which is always. You sign
+    in here once instead, and it stays signed in.
+    """
+    try:
+        from jarvis import paths
+
+        paths.ensure_dirs()
+        root = paths.ROOT / "browser-profile"
+    except Exception:
+        root = Path.home() / ".jarvis-browser-profile"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+class BrowserManager:
+    """The browser Jarvis drives - and the one you are signed into."""
+
+    def __init__(self, *, headless: bool = False, timeout_ms: int = 15_000,
+                 profile_dir: Path | None = None) -> None:
         self._headless = headless
         self._timeout_ms = timeout_ms
+        self._profile_dir = profile_dir or jarvis_profile_dir()
         self._playwright = None
         self._browser = None
         self._context = None
@@ -157,21 +183,46 @@ class BrowserManager:
             return
 
         self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(
-            headless=self._headless,
-        )
-        self._context = await self._browser.new_context()
-        self._page = await self._context.new_page()
+
+        # A *persistent* context, not launch() + new_context(). The latter is
+        # an incognito window with no history and no cookies, which is why
+        # every site opened as a logged-out stranger.
+        #
+        # channel="chrome" asks for real Chrome rather than the bundled
+        # Chromium. That matters beyond familiarity: Chromium ships without
+        # the DRM that Netflix, Spotify and Prime Video require, so on the
+        # bundled build those sites load and simply refuse to play anything.
+        options = {
+            "user_data_dir": str(self._profile_dir),
+            "headless": self._headless,
+            "no_viewport": True,
+            "args": ["--start-maximized"],
+        }
+        try:
+            self._context = await self._playwright.chromium.launch_persistent_context(
+                channel="chrome", **options)
+        except Exception:
+            # No Chrome installed: better the bundled browser, minus the DRM,
+            # than no browser at all.
+            self._context = await self._playwright.chromium.launch_persistent_context(
+                **options)
+
+        pages = self._context.pages
+        self._page = pages[0] if pages else await self._context.new_page()
         self._page.set_default_timeout(self._timeout_ms)
         if not self._headless:
             await _bring_page_window_to_front(self._page)
 
+    @property
+    def profile_dir(self) -> Path:
+        return self._profile_dir
+
     async def close(self) -> None:
         async with self._lock:
+            # A persistent context owns its browser, so closing it is enough -
+            # and there is no separate browser object to close.
             if self._context is not None:
                 await self._context.close()
-            if self._browser is not None:
-                await self._browser.close()
             if self._playwright is not None:
                 await self._playwright.stop()
 
