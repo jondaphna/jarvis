@@ -18,8 +18,21 @@ It installs `uv` if you don't have it, installs the Python packages, downloads
 the browser Jarvis drives, and fills in your keys. If your keys are already in
 the JARVIS vault it finds them; otherwise it asks, once.
 
+Keys are checked before anything is written: the shape first, then the key
+itself against Google and LiveKit. If a key is wrong you get one line saying
+so, not a page of websocket errors half an hour later.
+
 You need Node.js. If it stops and says so, get the LTS build from
 [nodejs.org](https://nodejs.org) and run it again.
+
+### The four other buttons
+
+| | |
+|---|---|
+| **`butler-check.bat`** | Are my keys still good? Asks Google and LiveKit. |
+| **`butler-keys.bat`** | Re-enter the keys from scratch. |
+| **`butler-devices.bat`** | List microphones and speakers, with their numbers. |
+| **`butler-talk.bat 1 4`** | Talk using microphone 1 and speakers 4. |
 
 ## Running it
 
@@ -44,6 +57,38 @@ The Flutter app is in `agent-starter-flutter/`. It needs the Flutter SDK, and
 it's a bigger job than the web page — worth doing once the rest is working.
 
 ---
+
+## If it dies with a wall of red text
+
+Read the **first** error, not the last. The bottom of a Python traceback is
+usually just the crash; the top says why.
+
+**`invalid x-goog-api-key header`** means the Google key has something in it
+that doesn't belong — a space, a newline, a command, or the key pasted twice.
+An HTTP header can't contain a space, so it fails deep inside the websocket
+handshake and the message never names the file it came from. Fix it with
+`butler-keys.bat` and paste **only** the key.
+
+This is also why the microphone looks innocent but suspicious: the session dies
+before audio is ever used, so the level meter at the bottom is real and the
+silence is not its fault.
+
+## Wrong microphone or speakers
+
+Console mode takes whatever Windows has set as default, which on a machine with
+a headset, a webcam and a VR headset is rarely the one you want.
+
+Run **`butler-devices.bat`**, find the microphone you actually talk into and the
+speakers you actually hear, then:
+
+```
+butler-talk.bat 1 4
+```
+
+— microphone 1, speakers 4. Either number can be left out.
+
+The web page (`butler-web.bat`) doesn't have this problem: the browser asks you
+which microphone to use and handles echo cancellation itself.
 
 ## If it connects but never speaks
 
