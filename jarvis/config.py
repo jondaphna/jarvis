@@ -338,6 +338,21 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "daily_spend_cap_usd": 5.0,      # LLM spend guard; 0 disables the cap
     },
 
+    # --- what Jarvis is allowed to do ------------------------------------- #
+    # Switches, set from the Permissions tab. Anything false has its tools
+    # removed before the model ever sees them, so it cannot try and cannot be
+    # talked into it. Power actions start off.
+    "permissions": {
+        "browse": True,
+        "read_web": True,
+        "control_web": True,
+        "apps": True,
+        "media": True,
+        "machine": True,
+        "memory": True,
+        "power": False,
+    },
+
     # --- which browser profile "open my Netflix" should use ---------------- #
     # Blank means "whichever Chrome profile is signed in". Set from the
     # interface when you have more than one and want a specific one.

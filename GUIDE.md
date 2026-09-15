@@ -74,6 +74,12 @@ you'll watch it browse.
 
 The **gear button**, top right of the web app. Five tabs.
 
+### Permissions
+A switch for each thing Jarvis can do — opening sites, clicking and typing,
+opening apps, volume, memory, power. Switching one off **removes those tools**
+rather than asking it to behave, so there is nothing to talk it out of. Power
+actions start off.
+
 ### Rules
 **The important one.** Written in your words, read at the start of every
 conversation.
@@ -315,4 +321,5 @@ sandbox and a human approving every patch first.
 
 ---
 
-*Ask me for any of these and I'll build it.*
+See **[WORKPLAN.md](WORKPLAN.md)** for what's next, how long each piece takes,
+and what I'd need from you for each one.

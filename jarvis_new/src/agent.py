@@ -17,6 +17,8 @@ from brain_memory import JarvisMemory
 from browser import BrowserManager
 from control_api import serve_in_background
 from os_tools import OSTools
+from permissions import filter_tools
+from permissions import summary as permission_summary
 from personalise import extra_instructions, load_rules, load_settings
 from prompts import AGENT_INSTRUCTIONS
 from tools import BrowserTools
@@ -62,14 +64,20 @@ class Assistant(Agent):
             # 3. Add `from livekit.plugins import openai` to the top of this file
             # 4. Replace the llm argument with:
             #     llm=openai.realtime.RealtimeModel(voice="marin")
-            instructions=AGENT_INSTRUCTIONS + "\n\n" + extra_instructions(
-                self.memory, self._settings, self._rules),
-            tools=[
+            instructions="\n\n".join(part for part in (
+                AGENT_INSTRUCTIONS,
+                extra_instructions(self.memory, self._settings, self._rules),
+                permission_summary(self._settings),
+            ) if part.strip()),
+            # Anything switched off is removed here rather than refused later.
+            # A tool the model was never given is one it cannot try, announce
+            # it is trying, or be talked into.
+            tools=filter_tools([
                 *self.browser_tools.tools,
                 *self.memory.tools,
                 *self.os_tools.tools,
                 *self._end_call_tool.tools,
-            ],
+            ], self._settings),
         )
 
 

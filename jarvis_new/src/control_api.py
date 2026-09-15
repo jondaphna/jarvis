@@ -279,6 +279,15 @@ class Control:
         except Exception:
             return None
 
+    def permissions(self) -> list[dict[str, Any]]:
+        """Every capability switch and whether it is on."""
+        try:
+            import permissions
+
+            return permissions.current(self.config.settings)
+        except Exception:
+            return []
+
     def browser_profiles(self) -> list[dict[str, str]]:
         """The Chrome profiles on this machine, named as Chrome names them."""
         try:
@@ -306,6 +315,7 @@ class Control:
             "runs": self.runs(limit=12),
             "plugins": PLUGINS,
             "browser_profiles": self.browser_profiles(),
+            "permissions": self.permissions(),
             "authorisations": AUTHORISATIONS,
         }
 

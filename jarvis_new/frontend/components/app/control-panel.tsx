@@ -35,6 +35,14 @@ type Mission = {
 };
 type Authorisation = { id: string; label: string; sentence: string };
 type BrowserProfile = { directory: string; name: string; email: string; active?: boolean };
+type Permission = {
+  key: string;
+  label: string;
+  detail: string;
+  tools: string[];
+  enabled: boolean;
+  risk: 'low' | 'medium' | 'high';
+};
 /** Only the parts the panel actually reads are typed; the rest passes through. */
 type Settings = {
   wake?: { phrase?: string; reply?: string };
@@ -49,10 +57,11 @@ type State = {
   conversations: { id: number; title?: string; updated_at?: string }[];
   plugins: Record<string, string>;
   browser_profiles: BrowserProfile[];
+  permissions: Permission[];
   authorisations: Authorisation[];
 };
 
-const TABS = ['Rules', 'Voice', 'Tasks', 'AI', 'Memory', 'Commands'] as const;
+const TABS = ['Rules', 'Permissions', 'Voice', 'Tasks', 'AI', 'Memory', 'Commands'] as const;
 type Tab = (typeof TABS)[number];
 
 async function api(path: string, init?: RequestInit) {
@@ -243,6 +252,90 @@ function RulesTab({ state, reload }: { state: State; reload: () => void }) {
       <p className="text-muted-foreground border-border border-t pt-4 text-xs">
         These apply to conversations. A scheduled task carries its own separate permissions, set on
         the task itself under Tasks.
+      </p>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Permissions — what it may and may not do                                    */
+/* -------------------------------------------------------------------------- */
+
+function PermissionsTab({ state, reload }: { state: State; reload: () => void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const toggle = async (key: string, next: boolean) => {
+    setBusy(key);
+    try {
+      await api('settings', {
+        method: 'POST',
+        body: JSON.stringify({ [`permissions.${key}`]: next }),
+      });
+      reload();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const risks: Record<Permission['risk'], string> = {
+    low: '',
+    medium: 'bg-amber-500/15 text-amber-600 dark:text-amber-400',
+    high: 'bg-destructive/15 text-destructive',
+  };
+
+  return (
+    <div className="space-y-4">
+      <p className="text-muted-foreground text-sm">
+        Switch something off and the tools behind it are taken away entirely — Jarvis isn&apos;t
+        asked to behave, it simply has no way to do it.
+      </p>
+
+      <div className="space-y-2">
+        {state.permissions?.map((p) => (
+          <div
+            key={p.key}
+            className="border-border bg-card/50 flex items-start justify-between gap-4 rounded-lg border p-3"
+          >
+            <div className="min-w-0">
+              <p className="flex items-center gap-2 text-sm font-medium">
+                {p.label}
+                {p.risk !== 'low' && (
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${risks[p.risk]}`}
+                  >
+                    {p.risk === 'high' ? 'careful' : 'powerful'}
+                  </span>
+                )}
+              </p>
+              <p className="text-muted-foreground text-xs">{p.detail}</p>
+              <p className="text-muted-foreground/70 mt-1 text-[11px]">
+                {p.tools.length} tool{p.tools.length === 1 ? '' : 's'}
+              </p>
+            </div>
+
+            <button
+              role="switch"
+              aria-checked={p.enabled}
+              aria-label={p.label}
+              disabled={busy === p.key}
+              onClick={() => toggle(p.key, !p.enabled)}
+              className={`mt-0.5 h-6 w-11 shrink-0 rounded-full transition disabled:opacity-50 ${
+                p.enabled ? 'bg-primary' : 'bg-secondary border-border border'
+              }`}
+            >
+              <span
+                className={`block h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                  p.enabled ? 'translate-x-5' : 'translate-x-0.5'
+                }`}
+              />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      <p className="text-muted-foreground border-border border-t pt-4 text-xs">
+        Changes apply the next time the agent starts. A call already running keeps the tools it
+        began with.
       </p>
     </div>
   );
@@ -960,6 +1053,7 @@ export function ControlPanel() {
               {state && (
                 <>
                   {tab === 'Rules' && <RulesTab state={state} reload={load} />}
+                  {tab === 'Permissions' && <PermissionsTab state={state} reload={load} />}
                   {tab === 'Voice' && <VoiceTab state={state} reload={load} />}
                   {tab === 'Tasks' && <TasksTab state={state} reload={load} />}
                   {tab === 'AI' && <AITab state={state} reload={load} />}
