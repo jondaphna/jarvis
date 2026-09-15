@@ -369,6 +369,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # interface when you have more than one and want a specific one.
     "browser": {
         "profile": "",
+        # Copy your Chrome sessions into Jarvis's browser on first run, so
+        # "open my Google" is yours without signing in again. Cookies and site
+        # storage only - never saved passwords, autofill, history or bookmarks.
+        "copy_sessions": True,
     },
 
     # --- your own standing instructions ----------------------------------- #

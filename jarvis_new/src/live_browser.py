@@ -59,8 +59,35 @@ def port_is_open(port: int = DEBUG_PORT) -> bool:
         return probe.connect_ex(("127.0.0.1", port)) == 0
 
 
+#: What gets copied from your Chrome so Jarvis starts signed in - and, more
+#: importantly, what does not.
+#:
+#: Sessions only. Chrome's "Login Data" file is its saved-password database and
+#: "Web Data" holds autofill - addresses, card numbers. Neither is needed to
+#: stay signed in to a site, and copying them would hand Jarvis's browser the
+#: ability to fill in your passwords and card details, which is far more than
+#: "open my Netflix" asks for. They are named here so it is obvious they were
+#: considered and left out on purpose.
+SESSION_FILES = ("Cookies", "Preferences")
+SESSION_FOLDERS = ("Local Storage", "Network")
+NEVER_COPIED = ("Login Data", "Web Data", "History", "Bookmarks")
+
+
+def seeding_wanted() -> bool:
+    """Whether to copy sessions across. On unless you turn it off."""
+    try:
+        from jarvis.config import Settings
+
+        return bool(Settings.load().get("browser.copy_sessions", True))
+    except Exception:
+        return True
+
+
 def seed_from_your_chrome(target: Path) -> bool:
-    """Copy your cookies across once, so you start already signed in.
+    """Copy your *sessions* across once, so you start already signed in.
+
+    Cookies and site storage only - never saved passwords, autofill, history or
+    bookmarks. See SESSION_FILES and NEVER_COPIED above.
 
     Best effort, and never fatal. Chrome encrypts cookies with a key tied to
     your Windows account, so a copy made by you, for you, on the same machine
@@ -69,6 +96,8 @@ def seed_from_your_chrome(target: Path) -> bool:
 
     Only ever reads from your profile. Nothing is written back to it.
     """
+    if not seeding_wanted():
+        return False
     try:
         from chrome_finder import list_profiles, preferred_profile, user_data_dir
 
@@ -91,12 +120,12 @@ def seed_from_your_chrome(target: Path) -> bool:
             shutil.copy2(source_root / "Local State", target / "Local State")
 
         copied = False
-        for name in ("Cookies", "Login Data", "Web Data", "Preferences"):
+        for name in SESSION_FILES:
             candidate = source / name
             if candidate.exists():
                 shutil.copy2(candidate, destination / name)
                 copied = True
-        for folder in ("Local Storage", "Network"):
+        for folder in SESSION_FOLDERS:
             candidate = source / folder
             if candidate.is_dir():
                 shutil.copytree(candidate, destination / folder,
