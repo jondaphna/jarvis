@@ -306,3 +306,59 @@ class TestPhoneCertificate:
         covered = {str(entry.value) for entry in san}
         assert "localhost" in covered
         assert socket.gethostname() in covered
+
+
+class TestServerInstall:
+    """Fetching and launching the local server."""
+
+    def test_the_download_url_is_the_official_release(self):
+        from jarvis.realtime import local
+
+        url = local.download_url()
+        assert url.startswith("https://github.com/livekit/livekit/releases/download/")
+        assert local.KNOWN_VERSION in url
+
+    def test_the_asset_matches_this_platform(self, monkeypatch):
+        from jarvis.realtime import local
+
+        monkeypatch.setattr("sys.platform", "win32")
+        asset, binary = local._platform_asset("1.13.7")
+        assert asset.endswith(".zip") and "windows" in asset
+        assert binary == "livekit-server.exe"
+
+        monkeypatch.setattr("sys.platform", "linux")
+        asset, binary = local._platform_asset("1.13.7")
+        assert asset.endswith(".tar.gz") and "linux" in asset
+        assert binary == "livekit-server"
+
+    def test_it_refuses_a_non_github_source(self, monkeypatch):
+        """The URL is built here, never taken from elsewhere - keep it that way."""
+        from jarvis.realtime import local
+
+        monkeypatch.setattr(local, "RELEASES", "https://evil.test/releases")
+        with pytest.raises(RuntimeError, match="github.com"):
+            local.download()
+
+    def test_failures_explain_themselves(self):
+        """"It exited immediately" helps nobody; the real reason must surface."""
+        from jarvis.realtime import local
+
+        class Stopped:
+            def communicate(self, timeout=None):
+                return ("listen tcp [::1]:7880: address family not supported "
+                        "by protocol", "")
+
+        assert "IPv6" in local._why_it_stopped(Stopped(), None)
+
+        class Busy:
+            def communicate(self, timeout=None):
+                return ("", "listen tcp :7880: bind: address already in use")
+
+        assert "already" in local._why_it_stopped(Busy(), None)
+
+    def test_a_missing_binary_is_reported_clearly(self, tmp_path, monkeypatch):
+        from jarvis.realtime import local
+
+        monkeypatch.setattr(local, "find_binary", lambda: None)
+        with pytest.raises(FileNotFoundError, match="isn't installed"):
+            local.start()

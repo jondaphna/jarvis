@@ -254,11 +254,13 @@ Then pick how LiveKit runs — **either works, and both are free**:
 **On your own machine** (no account, no sign-up):
 
 ```bash
-winget install LiveKit.LiveKitServer
-livekit-server --dev                 # leave this running in its own window
-
+jarvis realtime --install-server     # one time, ~50MB
 jarvis realtime --local
 ```
+
+That fetches the official LiveKit release from GitHub and starts it for you
+whenever you use `--local` — no second terminal to keep open. (There is no
+winget package for it, despite what you may read.)
 
 **Or LiveKit Cloud** (nothing to install, works away from home):
 
@@ -669,7 +671,7 @@ Logs are in the folder `jarvis where` prints.
 ## Testing
 
 ```bash
-pytest tests -q        # 298 tests, no API key or network needed
+pytest tests -q        # 303 tests, no API key or network needed
 ```
 
 The permission tests are the ones that matter — they're the safety net for

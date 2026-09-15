@@ -1003,16 +1003,44 @@ def cmd_realtime(args: argparse.Namespace) -> int:
     if config.vault.needs_passphrase:
         config.vault.unlock(_prompt_passphrase("Vault passphrase: "))
 
+    # --install-server: fetch the official release once, then carry on.
+    if args.install_server:
+        print(BANNER)
+        print(bold("  Fetching the LiveKit server\n"))
+        print(dim(f"  From {rt_local.download_url()}"))
+        print(dim("  (the official release, straight from github.com)\n"))
+        try:
+            binary = rt_local.download(on_progress=lambda m: print(dim(f"  {m}")))
+        except Exception as exc:
+            print(red(f"\n  Download failed: {exc}"))
+            print(dim("\n  You can grab it by hand instead:"))
+            print(dim(f"    {rt_local.RELEASES}\n"))
+            return 1
+        print(green(f"\n  Installed: {binary}"))
+        print(dim("  JARVIS will start it for you from now on.\n"))
+        print(dim("  Next:  python -m jarvis realtime --local\n"))
+        return 0
+
     # --local: use a LiveKit server running on this machine. No account, no
     # sign-up, nothing leaves the network except the Gemini call itself.
+    server_process = None
     if args.local:
         if not rt_local.is_running():
-            print(red("\n  No LiveKit server found on this machine.\n"))
-            print(dim(rt_local.install_help()))
-            print()
-            return 1
+            binary = rt_local.find_binary()
+            if binary is None:
+                print(red("\n  No LiveKit server on this machine yet.\n"))
+                print(dim(rt_local.install_help()))
+                print()
+                return 1
+            print(dim("\n  Starting the LiveKit server..."))
+            try:
+                server_process = rt_local.start_resilient(binary)
+            except Exception as exc:
+                print(red(f"\n  {exc}\n"))
+                return 1
+            print(dim("  Started."))
         rt_local.apply(config)
-        print(dim("\n  Using the LiveKit server on this machine."))
+        print(dim("  Using the LiveKit server on this machine."))
 
     try:
         credentials(config)
@@ -1070,6 +1098,8 @@ def cmd_realtime(args: argparse.Namespace) -> int:
         return 0
     finally:
         web.shutdown()
+        if server_process is not None:
+            server_process.terminate()
 
 
 def cmd_where(args: argparse.Namespace) -> int:
@@ -1108,6 +1138,7 @@ def build_parser() -> argparse.ArgumentParser:
   jarvis                           open the desktop app (or chat if PyQt6 is missing)
   jarvis chat                      talk to it in the terminal
   jarvis realtime                  instant voice in your browser (best)
+  jarvis realtime --install-server get the local server (one time)
   jarvis realtime --local          ...with no LiveKit account at all
   jarvis realtime --lan            ...and on your phone
   jarvis voice                     talk to it out loud (local pipeline)
@@ -1244,6 +1275,8 @@ def build_parser() -> argparse.ArgumentParser:
     realtime_cmd.add_argument("--local", action="store_true",
                               help="use a LiveKit server on this machine "
                                    "(no account needed)")
+    realtime_cmd.add_argument("--install-server", action="store_true",
+                              help="download the LiveKit server for --local")
     realtime_cmd.add_argument("--agent-only", action="store_true",
                               help="run just the agent worker, no web page")
     realtime_cmd.set_defaults(func=cmd_realtime)
