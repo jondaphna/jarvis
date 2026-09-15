@@ -334,6 +334,23 @@ authorisation in the request, exactly as before.
 
 ---
 
+## Interrupting it
+
+Talk over JARVIS and it stops mid-sentence and listens to what you said instead.
+You don't have to wait for it to finish.
+
+There's a real problem underneath that, worth knowing about: your microphone
+hears your speakers, so JARVIS can hear its own voice and answer itself. Without
+hardware echo cancellation the only way to tell the difference is the words - so
+JARVIS compares what it just heard against what it just said. Close match, it's
+the speakers and it's ignored. Different, you're interrupting, and it stops.
+
+**Headphones make this perfect**, because the microphone never hears the
+speakers at all. Without them it works well, but a very noisy room can still
+confuse it.
+
+---
+
 ## Only listening to you
 
 JARVIS can learn your voice and ignore everybody else — useful if the TV is on,
@@ -571,7 +588,7 @@ Logs are in the folder `jarvis where` prints.
 ## Testing
 
 ```bash
-pytest tests -q        # 262 tests, no API key or network needed
+pytest tests -q        # 264 tests, no API key or network needed
 ```
 
 The permission tests are the ones that matter — they're the safety net for

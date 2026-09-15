@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 import shutil
 import subprocess
 import sys
 import tempfile
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +32,8 @@ from .events import bus, log
 #: Split on sentence ends, but not on decimals, abbreviations or ellipses.
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'“])")
 _MIN_CHUNK = 60          # don't bother speaking fragments shorter than this
+#: Speakers lag the code; treat this long after the last chunk as still talking.
+SPEECH_TAIL_SECONDS = 0.6
 
 
 class SpeechError(RuntimeError):
@@ -44,6 +48,12 @@ class SpeechEngine:
         self.settings = config.settings
         self._cancel = asyncio.Event()
         self._speaking = False
+        #: Audio keeps coming out of the speakers slightly after the last chunk
+        #: is handed over, so "are we speaking" has to include a short tail.
+        self._speaking_until = 0.0
+        #: What was said recently, for telling an echo apart from a real
+        #: interruption when there's no hardware echo cancellation.
+        self._recent: deque[tuple[float, str]] = deque(maxlen=8)
         self._current: Any = None
 
     # ------------------------------------------------------------------ #
@@ -84,11 +94,30 @@ class SpeechEngine:
 
     @property
     def speaking(self) -> bool:
-        return self._speaking
+        """True while audio is playing, plus a short tail afterwards."""
+        return self._speaking or time.monotonic() < self._speaking_until
+
+    def note_spoken(self, text: str) -> None:
+        """Remember what was just said, so an echo of it can be recognised."""
+        cleaned = _clean_for_speech(text)
+        if cleaned:
+            self._recent.append((time.monotonic(), cleaned.lower()))
+
+    def recently_spoken(self, window: float = 20.0) -> str:
+        cutoff = time.monotonic() - window
+        return " ".join(text for at, text in self._recent if at >= cutoff)
 
     def stop(self) -> None:
-        """Interrupt whatever is being said. Used for barge-in."""
+        """Cut speech off immediately. This is what makes barge-in possible."""
         self._cancel.set()
+        self._speaking = False
+        self._speaking_until = 0.0
+        self._recent.clear()
+        try:
+            import sounddevice
+            sounddevice.stop()          # halts playback mid-sentence
+        except Exception:
+            pass
 
     async def say(self, text: str, voice: str | None = None,
                   engine: str | None = None) -> None:
@@ -120,6 +149,11 @@ class SpeechEngine:
         if name == "none":
             log.info("SPEAK (no engine): %s", text)
             return
+
+        # Marked here, not just in say(): every streamed reply comes through
+        # this path, and without it the echo guard never fires at all.
+        self._speaking = True
+        self.note_spoken(text)
         try:
             if name == "pyttsx3":
                 await asyncio.to_thread(self._pyttsx3_say, text, voice)
@@ -135,6 +169,9 @@ class SpeechEngine:
                     await asyncio.to_thread(self._pyttsx3_say, text, voice)
                 except Exception:
                     log.warning("offline fallback voice failed too", exc_info=True)
+        finally:
+            self._speaking = False
+            self._speaking_until = time.monotonic() + SPEECH_TAIL_SECONDS
 
     # ------------------------------------------------------------------ #
     # Synthesis backends

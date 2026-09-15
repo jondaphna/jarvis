@@ -16,6 +16,7 @@ import asyncio
 import queue
 import tempfile
 import threading
+import time
 import wave
 from collections import deque
 from dataclasses import dataclass
@@ -50,6 +51,10 @@ class Utterance:
     #: The raw 16kHz mono PCM this was transcribed from. Kept so the speaker
     #: verifier can check whose voice it was without recording twice.
     pcm: bytes = b""
+    #: monotonic() when the speech STARTED. Transcription happens afterwards,
+    #: so judging "was JARVIS talking at the time" by arrival time is wrong -
+    #: by then it has usually stopped, and its own echo slips through.
+    captured_at: float = 0.0
 
     def __bool__(self) -> bool:
         return bool(self.text.strip())
@@ -277,9 +282,25 @@ class Transcriber:
 
         model = self._load_whisper()
         audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+
+        wake = self.settings.get("voice.wake_word", "jarvis")
         segments, info = model.transcribe(
-            audio, language="en", beam_size=1, vad_filter=True,
-            condition_on_previous_text=False)
+            audio,
+            language="en",
+            # A wider beam is markedly more accurate on short commands and
+            # costs only a few tens of milliseconds on audio this short.
+            beam_size=int(self.settings.get("voice.beam_size", 5)),
+            # The audio is already cut to a single utterance by our own VAD.
+            # Running Whisper's VAD over it again trimmed real words - which is
+            # what made it mishear the start and end of commands.
+            vad_filter=False,
+            condition_on_previous_text=False,
+            # Nudge it towards the words it will actually hear most often.
+            initial_prompt=f"{wake}. Open, close, search, play, remind, write, "
+                           f"stop, cancel, yes, no.",
+            temperature=0.0,
+            no_speech_threshold=0.5,
+        )
         pieces = list(segments)
         text = " ".join(segment.text.strip() for segment in pieces).strip()
         confidence = None
@@ -445,19 +466,21 @@ class ContinuousListener:
         """Yield each transcribed utterance as it becomes available."""
         while not self._stop.is_set():
             try:
-                pcm = await asyncio.to_thread(self._pcm.get, True, 0.4)
+                item = await asyncio.to_thread(self._pcm.get, True, 0.4)
             except queue.Empty:
                 if not self.running() and self._error:
                     raise MicrophoneError(self._error)
                 continue
-            if pcm is None:
+            if item is None:
                 return
+            pcm, captured_at = item
             try:
                 utterance = await self.transcriber.transcribe(pcm)
             except TranscriptionError as exc:
                 log.warning("transcription failed: %s", exc)
                 continue
             if utterance:
+                utterance.captured_at = captured_at
                 yield utterance
 
     # ------------------------------------------------------------------ #
@@ -509,6 +532,7 @@ class ContinuousListener:
         speaking = False
         quiet_run = 0
         voiced_frames = 0
+        started_at = 0.0
         noise_floor = 0.0
         calibrated = 0
 
@@ -539,6 +563,7 @@ class ContinuousListener:
                         speaking = True
                         quiet_run = 0
                         voiced_frames = 1
+                        started_at = time.monotonic()
                         collected = list(preroll)
                         preroll.clear()
                     continue
@@ -554,14 +579,14 @@ class ContinuousListener:
                     # Measure the *voiced* part only. Counting the pre-roll and
                     # the trailing silence would let a door slam through as a word.
                     if voiced_frames * FRAME_MS >= MIN_SPEECH_MS:
-                        self._emit(b"".join(collected))
+                        self._emit(b"".join(collected), started_at)
                     speaking = False
                     quiet_run = 0
                     voiced_frames = 0
                     collected = []
 
             if speaking and voiced_frames * FRAME_MS >= MIN_SPEECH_MS:
-                self._emit(b"".join(collected))
+                self._emit(b"".join(collected), started_at)
 
         except Exception as exc:
             self._error = str(exc)
@@ -569,14 +594,15 @@ class ContinuousListener:
         finally:
             self._level = 0.0
 
-    def _emit(self, pcm: bytes) -> None:
+    def _emit(self, pcm: bytes, started_at: float) -> None:
+        item = (pcm, started_at)
         try:
-            self._pcm.put_nowait(pcm)
+            self._pcm.put_nowait(item)
         except queue.Full:
             # Transcription is behind; drop the oldest rather than block capture.
             try:
                 self._pcm.get_nowait()
-                self._pcm.put_nowait(pcm)
+                self._pcm.put_nowait(item)
             except queue.Empty:
                 pass
 

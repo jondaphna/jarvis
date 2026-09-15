@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import re
 import time
 from typing import Any, Callable
 
@@ -45,6 +46,13 @@ WAKE_REPLIES = [
     "Right here. What's up?",
 ]
 
+#: Said when a turn falls over, so a failure never sounds like a crash.
+RECOVERIES = [
+    "Sorry, I lost that one. Say again?",
+    "Hm, that didn't go through. One more time?",
+    "Missed that - try me again.",
+]
+
 GOODBYES = [
     "Alright, I'll be here.",
     "Catch you later.",
@@ -57,6 +65,24 @@ _GOODBYE_WORDS = {
     "go to sleep", "sleep", "nevermind", "never mind", "thanks that's all",
     "stop listening", "quiet",
 }
+
+
+
+def _similar(heard: str, spoken: str, threshold: float = 0.6) -> bool:
+    """Is `heard` mostly made of words JARVIS just said?
+
+    Word overlap rather than string distance: speech-to-text mangles an echo
+    badly enough that character similarity misses it, but the words themselves
+    still mostly come through.
+    """
+    heard_words = [w for w in re.findall(r"\w+", heard) if len(w) > 2]
+    if not heard_words:
+        return False
+    spoken_words = set(re.findall(r"\w+", spoken))
+    if not spoken_words:
+        return False
+    overlap = sum(1 for w in heard_words if w in spoken_words)
+    return (overlap / len(heard_words)) >= threshold
 
 
 def _is_goodbye(text: str) -> bool:
@@ -93,6 +119,8 @@ class Assistant:
 
         self.conversation_id: int | None = None
         self._listener_handle: Any = None
+        #: Until this moment, speech is accepted without the wake word.
+        self._open_until: float = 0.0
         self._started = False
 
     # ------------------------------------------------------------------ #
@@ -298,53 +326,37 @@ class Assistant:
             raise
 
         self._listener_handle = listener
+        self._open_until = 0.0
         log.info("listening continuously (%s)",
                  f"say '{word}'" if wake_word else "no wake word needed")
         bus.publish(events.INFO,
                     f"Listening - say “{word}”" if wake_word else "Listening")
-
-        open_until = 0.0        # while now < this, no wake word is needed
 
         try:
             async for utterance in listener.utterances():
                 if should_stop is not None and should_stop():
                     return
 
-                text = (utterance.text or "").strip()
-                if not text:
+                # One bad turn must never end the conversation. Before, any
+                # error here - a failed transcription, a TTS hiccup, an API
+                # blip - escaped the loop and JARVIS went silent for good.
+                try:
+                    finished = await self._handle_utterance(
+                        utterance, wake_word, word, follow_up_seconds)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    log.warning("turn failed: %s", exc, exc_info=True)
+                    bus.publish(events.ERROR, f"That one went wrong: {exc}")
+                    # Say something - silence after a failure reads as "dead".
+                    try:
+                        await self.say(random.choice(RECOVERIES))
+                    except Exception:
+                        pass
                     continue
 
-                # Don't let JARVIS answer its own voice coming back through the
-                # speakers - that loops forever.
-                if self.speech.speaking:
-                    continue
-
-                # Who is speaking? Several people can be enrolled, each with
-                # their own level of authority.
-                if not self._identify_speaker(utterance):
-                    continue
-
-                now = time.monotonic()
-                command = text
-
-                if wake_word and now >= open_until:
-                    heard, remainder = contains_wake_word(text, word)
-                    if not heard:
-                        continue
-                    if not remainder:
-                        # Just the name: answer straight away, then listen.
-                        await self.say(random.choice(WAKE_REPLIES))
-                        open_until = time.monotonic() + follow_up_seconds
-                        continue
-                    command = remainder
-
-                if _is_goodbye(command):
-                    await self.say(random.choice(GOODBYES))
+                if finished:
                     return
-
-                await self.ask(command, tier=TIER_VOICE, speak=True)
-                # Carry on the conversation without repeating the wake word.
-                open_until = time.monotonic() + follow_up_seconds
 
         except asyncio.CancelledError:
             raise
@@ -354,6 +366,83 @@ class Assistant:
         finally:
             self._listener_handle = None
             await listener.stop()
+
+
+
+    async def _handle_utterance(self, utterance, wake_word: bool, word: str,
+                                follow_up_seconds: float) -> bool:
+        """Deal with one thing that was said. True means the loop should stop."""
+        text = (utterance.text or "").strip()
+        if not text:
+            return False
+
+        # --- is this JARVIS hearing itself, or you interrupting it? ------ #
+        if self._spoken_over(utterance):
+            if self._is_own_echo(text):
+                log.debug("ignored an echo of my own voice: %r", text)
+                return False
+            # Not an echo - you're talking over it. Stop dead and listen.
+            log.info("interrupted")
+            self.speech.stop()
+            bus.publish(events.INFO, "Interrupted - go ahead")
+
+        if not self._identify_speaker(utterance):
+            return False
+
+        now = time.monotonic()
+        command = text
+
+        if wake_word and now >= self._open_until:
+            heard, remainder = contains_wake_word(text, word)
+            if not heard:
+                return False
+            if not remainder:
+                await self.say(random.choice(WAKE_REPLIES))
+                self._open_until = time.monotonic() + follow_up_seconds
+                return False
+            command = remainder
+
+        if _is_goodbye(command):
+            await self.say(random.choice(GOODBYES))
+            return True
+
+        # Open the follow-up window BEFORE answering, not after. A long reply -
+        # or one that fails - would otherwise leave you having to say the wake
+        # word again, which is exactly when you least expect to.
+        self._open_until = time.monotonic() + follow_up_seconds
+        try:
+            await self.ask(command, tier=TIER_VOICE, speak=True)
+        finally:
+            # Measured from when it stops talking, so you always get the full
+            # window to reply.
+            self._open_until = time.monotonic() + follow_up_seconds
+        return False
+
+    def _spoken_over(self, utterance) -> bool:
+        """Was JARVIS talking when this was said?"""
+        captured = getattr(utterance, "captured_at", 0.0)
+        if not captured:
+            return self.speech.speaking
+        # Judged against when the speech STARTED, not when it arrived here.
+        return captured < self._speaking_stopped_at()
+
+    def _speaking_stopped_at(self) -> float:
+        if self.speech.speaking:
+            return time.monotonic() + 1e6      # still going
+        return getattr(self.speech, "_speaking_until", 0.0)
+
+    def _is_own_echo(self, heard: str) -> bool:
+        """Does this look like JARVIS's own words coming back through the mic?
+
+        Without hardware echo cancellation the microphone can't tell the
+        speakers from a person, so the text is compared instead: if what was
+        heard closely matches what was just said, it's the speakers. If it
+        doesn't, somebody is genuinely talking over it.
+        """
+        spoken = self.speech.recently_spoken()
+        if not spoken:
+            return False
+        return _similar(heard.lower(), spoken)
 
 
     def _identify_speaker(self, utterance) -> bool:

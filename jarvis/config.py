@@ -295,6 +295,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "stt_engine": "auto",            # auto | faster-whisper | deepgram | none
         "tts_engine": "auto",            # auto | fish | edge | cartesia | elevenlabs | pyttsx3 | none
         "whisper_model": "base.en",      # tiny.en | base.en | small.en | medium.en
+        # Wider beam = more accurate, slightly slower. 5 is a good balance.
+        "beam_size": 5,
         "edge_voice": "en-GB-RyanNeural",
         "fish_voice_id": "",             # voice model id from fish.audio
         "fish_model": "s1",              # Fish TTS model: s1 or speech-1.6

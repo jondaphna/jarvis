@@ -242,9 +242,42 @@ class TestConversationLoop:
     async def test_it_does_not_answer_its_own_voice(self, app):
         """Speakers feed the microphone; without this it talks to itself."""
         app.speech._speaking = True
-        self._script(app, "Jarvis, open chrome")
+        app.speech.note_spoken("I have opened Chrome and searched for flights")
+        self._script(app, "I have opened chrome and searched for flights")
         await app.voice_loop()
         assert app.asked == []
+
+    async def test_you_can_interrupt_it_mid_sentence(self, app):
+        """Barge-in: talking over it must stop it and switch to the new thing."""
+        app.speech._speaking = True
+        app.speech.note_spoken("The weather today is twenty eight degrees and sunny")
+
+        stopped: list[bool] = []
+        original_stop = app.speech.stop
+        app.speech.stop = lambda: (stopped.append(True), original_stop())[1]
+
+        self._script(app, "Jarvis, forget that, open my email")
+        await app.voice_loop()
+
+        assert stopped, "it should have stopped talking"
+        assert app.asked == ["forget that, open my email"]
+
+    async def test_one_bad_turn_does_not_end_the_conversation(self, app):
+        """A single failure used to kill the loop and leave it silent."""
+        calls: list[str] = []
+
+        async def flaky_ask(text, **kwargs):
+            calls.append(text)
+            if len(calls) == 1:
+                raise RuntimeError("transcription hiccup")
+            from jarvis.core.brain import Reply
+            return Reply(text="ok")
+
+        app.ask = flaky_ask
+        self._script(app, "Jarvis, first thing", "and now the second thing")
+        await app.voice_loop()
+
+        assert calls == ["first thing", "and now the second thing"]
 
     async def test_stop_signal_is_honoured(self, app):
         self._script(app, "Jarvis, open chrome", "and another thing")
@@ -255,3 +288,58 @@ class TestConversationLoop:
         self._script(app, "Jarvis")
         await app.voice_loop()
         assert app._listener_handle is None
+
+
+class TestEchoAndInterruption:
+    """Telling JARVIS's own voice apart from someone talking over it.
+
+    Without hardware echo cancellation this is decided on the text: what came
+    back through the microphone is compared with what was just said. Getting it
+    wrong in one direction makes JARVIS answer itself in a loop; in the other,
+    it becomes impossible to interrupt.
+    """
+
+    @pytest.mark.parametrize("heard", [
+        "the weather in tel aviv is twenty eight degrees",
+        "twenty eight degrees and sunny",
+        "The weather in Tel Aviv today is twenty eight degrees and sunny",
+    ])
+    def test_its_own_words_are_recognised_as_echo(self, heard):
+        from jarvis.core.assistant import _similar
+        spoken = "the weather in tel aviv today is twenty eight degrees and sunny"
+        assert _similar(heard.lower(), spoken)
+
+    @pytest.mark.parametrize("heard", [
+        "no stop, open chrome instead",
+        "what about tomorrow",
+        "forget it, call my brother",
+        "jarvis stop",
+    ])
+    def test_a_real_interruption_is_not_echo(self, heard):
+        from jarvis.core.assistant import _similar
+        spoken = "the weather in tel aviv today is twenty eight degrees and sunny"
+        assert not _similar(heard.lower(), spoken)
+
+    def test_nothing_spoken_means_nothing_is_echo(self):
+        from jarvis.core.assistant import _similar
+        assert not _similar("anything at all", "")
+
+    def test_speaking_state_covers_the_streamed_path(self, workspace):
+        """The bug that made the guard useless: only say() marked it speaking."""
+        from jarvis.config import Config
+        from jarvis.core.voice_out import SpeechEngine
+
+        speech = SpeechEngine(Config())
+        assert not speech.speaking
+        speech.note_spoken("hello there")
+        assert "hello there" in speech.recently_spoken()
+
+    def test_stopping_clears_what_was_said(self, workspace):
+        from jarvis.config import Config
+        from jarvis.core.voice_out import SpeechEngine
+
+        speech = SpeechEngine(Config())
+        speech.note_spoken("something")
+        speech.stop()
+        assert speech.recently_spoken() == ""
+        assert not speech.speaking
