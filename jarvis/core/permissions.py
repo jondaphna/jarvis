@@ -43,6 +43,7 @@ from .grants import (
     CAP_WEB_SEARCH, CAPABILITY_HELP, HIGH_RISK_CAPABILITIES, Grant, parse_grants,
 )
 from .memory import Memory
+from .people import Authority
 
 
 class Risk(IntEnum):
@@ -169,6 +170,10 @@ class PermissionBroker:
         #: Set by an attended front-end (CLI/UI) to ask the user live. When
         #: None - the overnight case - medium-risk actions queue instead.
         self.approval_callback: ApprovalCallback | None = None
+        #: Who is currently being served. Identity can only ever NARROW what is
+        #: allowed - it never grants anything the owner wouldn't already have.
+        self.actor_authority: Authority = Authority.OWNER
+        self.actor_name: str = ""
 
     # ------------------------------------------------------------------ #
     # Grants
@@ -276,6 +281,63 @@ class PermissionBroker:
         for extra in self.settings.get("autonomy.extra_workspaces", []) or []:
             roots.append(Path(extra).expanduser())
         return roots
+
+    # ------------------------------------------------------------------ #
+    # Who is asking
+    # ------------------------------------------------------------------ #
+
+    def acting_as(self, authority: Authority, name: str = "") -> None:
+        """Serve the next requests as this person."""
+        self.actor_authority = authority
+        self.actor_name = name
+
+    def reset_actor(self) -> None:
+        self.actor_authority = Authority.OWNER
+        self.actor_name = ""
+
+    def _authority_block(self, req: Request) -> Decision | None:
+        """Refuse anything this person's level doesn't reach. None = carry on.
+
+        Deliberately a veto and nothing more: a guest can never be granted
+        something the owner's own policy would refuse, because this runs before
+        the normal rules and can only say no.
+        """
+        level = self.actor_authority
+        if level is Authority.OWNER:
+            return None
+
+        who = self.actor_name or "they"
+
+        if level is Authority.BLOCKED:
+            return Decision(Outcome.DENY, Risk.FORBIDDEN,
+                            f"I don't take instructions from {who}.", req)
+
+        if level is Authority.GUEST:
+            if req.capability == CAP_LLM_CALL:
+                return None
+            return Decision(
+                Outcome.DENY, Risk.FORBIDDEN,
+                f"{who} can talk to me, but can't have me do things on this "
+                f"machine. Ask {self._owner_phrase()} if you need that.", req)
+
+        if level is Authority.TRUSTED:
+            risk, _ = self.assess(req)
+            if risk <= Risk.SAFE:
+                return None
+            return Decision(
+                Outcome.DENY, Risk.FORBIDDEN,
+                f"{who} can ask me things, but changing anything is reserved "
+                f"for {self._owner_phrase()}.", req)
+
+        return None
+
+    def _owner_phrase(self) -> str:
+        owner = getattr(self, "people", None)
+        if owner is not None:
+            person = owner.owner()
+            if person is not None:
+                return person.name
+        return "the owner"
 
     # ------------------------------------------------------------------ #
     # Risk assessment
@@ -391,6 +453,11 @@ class PermissionBroker:
 
     def check(self, req: Request) -> Decision:
         """Decide without consuming grants or queueing. For previews and tools."""
+        # Identity is checked before anything else, and can only refuse.
+        blocked = self._authority_block(req)
+        if blocked is not None:
+            return blocked
+
         risk, reason = self.assess(req)
 
         if risk is Risk.FORBIDDEN:
@@ -530,6 +597,12 @@ class PermissionBroker:
             "Needs one-tap approval: files outside the workspace, unapproved apps, "
             "shell commands.",
         ]
+        if self.actor_authority is not Authority.OWNER:
+            lines.append(
+                f"You are currently talking to {self.actor_name or 'someone else'}, "
+                f"not the owner. Their level is '{self.actor_authority.label}': "
+                f"{self.actor_authority.describe()}. Be friendly, answer what you "
+                f"can, and say plainly that anything else is the owner's call.")
         if grants:
             lines.append("Authorisations currently in force:")
             lines += [f"  - {g.describe()}" for g in grants]

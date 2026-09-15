@@ -272,6 +272,68 @@ it opt-in.
 
 ---
 
+## Your own commands
+
+Tell JARVIS a rule once and it keeps it forever. Just say it:
+
+> "From now on, **when I say hey jarvis, say: Yes sir, how can I help you**"
+
+> "**Always** call me sir"
+
+> "When I say **movie night**, dim the lights and open Netflix"
+
+Three kinds, and the first one matters for speed:
+
+| Kind | What it does | Cost |
+|---|---|---|
+| **reply** | Says your exact words back | **instant, free — no model call at all** |
+| **always** | A standing instruction on every conversation | normal |
+| **do** | A shorthand that expands into a fuller request | normal |
+
+A `reply` rule is answered locally, so "hey jarvis" comes back with zero delay
+and zero cost — no API call happens.
+
+From the terminal:
+
+```bash
+jarvis commands                                     # list them
+jarvis commands add "hey jarvis" "Yes sir"          # exact reply
+jarvis commands always "keep your answers short"    # standing instruction
+jarvis commands do "movie night" "open Netflix"     # shorthand
+jarvis commands remove <id>
+```
+
+---
+
+## More than one person
+
+JARVIS can tell people apart by voice (and by face, with a camera) and give each
+of them a different level of authority — which is how "he can talk to it, but he
+can't touch my computer" actually works.
+
+```bash
+jarvis people add Dani --authority trusted
+jarvis people voice Dani          # learn their voice
+jarvis people level Dani --authority guest
+```
+
+| Level | Can do |
+|---|---|
+| **owner** | Everything — still subject to the normal permission system |
+| **trusted** | Ask questions, search, read. **Cannot change anything** |
+| **guest** | Conversation only. No tools |
+| **blocked** | Ignored entirely |
+
+Rules can be scoped too, so `jarvis commands add "hey jarvis" "Yes boss" --who Dani`
+gives him a different greeting from yours.
+
+**Identity narrows, it never grants.** A recording of your voice can fool it, so
+it can only ever *reduce* what someone is allowed to do — never raise it. Anything
+that spends money, publishes, or sends messages still needs your explicit
+authorisation in the request, exactly as before.
+
+---
+
 ## Only listening to you
 
 JARVIS can learn your voice and ignore everybody else — useful if the TV is on,
@@ -426,6 +488,8 @@ jarvis say "hello"      speak a line out loud (tests audio output)
 jarvis listen           record one sentence (tests the microphone)
 jarvis config KEY VALUE read or change any setting
 jarvis voiceprint       enrol/test/on/off/forget your voiceprint
+jarvis commands         your own custom commands
+jarvis people           who it recognises and what they may ask for
 jarvis where            where JARVIS keeps its files
 ```
 
@@ -507,7 +571,7 @@ Logs are in the folder `jarvis where` prints.
 ## Testing
 
 ```bash
-pytest tests -q        # 219 tests, no API key or network needed
+pytest tests -q        # 262 tests, no API key or network needed
 ```
 
 The permission tests are the ones that matter — they're the safety net for

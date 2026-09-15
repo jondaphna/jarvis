@@ -20,6 +20,8 @@ from .events import bus, log, setup_logging
 from .grants import parse_app_allowances
 from .memory import Memory
 from .permissions import PermissionBroker
+from .people import Authority, PeopleRegistry
+from .rules import KIND_REPLY, KIND_RUN, RuleBook, parse_rule_command
 from .scheduler import MissionScheduler
 from .speaker_id import SpeakerVerifier
 from .tools import ToolRegistry
@@ -74,10 +76,16 @@ class Assistant:
 
         self.memory = Memory()
         self.broker = PermissionBroker(self.settings, self.memory)
+        # Identity and custom commands are built early: the brain reads standing
+        # instructions from the rulebook, and the broker consults the registry.
+        self.people = PeopleRegistry(self.settings)
+        self.rules = RuleBook(self.settings)
+        self.broker.people = self.people
         self.computer = Computer(self.settings)
         self.tools = ToolRegistry(self.broker, path_resolver=self.computer.resolve)
         self.plugins = PluginManager(self.config, app=self)
         self.brain = Brain(self.config, self.memory, self.broker, self.tools)
+        self.brain.rules = self.rules
         self.scheduler = MissionScheduler(self)
         self.speech = SpeechEngine(self.config)
         self.speaker = SpeakerVerifier(self.settings)
@@ -150,6 +158,8 @@ class Assistant:
             },
             "plugins": self.plugins.catalogue(),
             "plugin_errors": self.plugins.errors,
+            "people": self.people.summary(),
+            "commands": self.rules.summary(),
             "missions": len(self.scheduler.missions),
             "mission_errors": self.scheduler.load_errors,
             "tools": len(self.tools.names()),
@@ -187,6 +197,36 @@ class Assistant:
         # ever from the user's own words - never from something JARVIS read.
         for app_name in parse_app_allowances(text):
             self.broker.allow_app(app_name)
+
+        speaker = self.broker.actor_name or None
+
+        # "From now on, when I say X, say Y" - remembered, no model needed.
+        if actor_is_owner := (self.broker.actor_authority is Authority.OWNER):
+            new_rule = parse_rule_command(text)
+            if new_rule is not None:
+                new_rule.scope = speaker or new_rule.scope
+                self.rules.add(new_rule)
+                confirmation = f"Got it. {new_rule.describe()}"
+                if speak:
+                    await self.say(confirmation)
+                return Reply(text=confirmation, model="rule", provider="local",
+                             conversation_id=self.conversation_id)
+
+        # A matching command answers instantly, for free, in your exact words.
+        rule = self.rules.find(text, speaker)
+        if rule is not None and rule.kind == KIND_REPLY:
+            self.rules.consume(rule)
+            bus.publish(events.REPLY, rule.response, model="rule", brain="local")
+            if speak:
+                await self.say(rule.response)
+            return Reply(text=rule.response, model="rule", provider="local",
+                         conversation_id=self.conversation_id)
+
+        # A shorthand expands into the fuller request before the model sees it.
+        if rule is not None and rule.kind == KIND_RUN:
+            self.rules.consume(rule)
+            extra = rule.remainder(text)
+            text = f"{rule.response} {extra}".strip() if extra else rule.response
 
         stream = None
         sink: Callable[[str], Any] | None = on_text
@@ -278,13 +318,9 @@ class Assistant:
                 if self.speech.speaking:
                     continue
 
-                # Whose voice was that? Off unless enrolled and switched on.
-                check = self.speaker.verify(utterance.pcm)
-                if not check.accepted:
-                    log.info("ignored another voice (%.2f)", check.score)
-                    bus.publish(events.INFO,
-                                f"Ignored - that wasn't your voice ({check.score:.2f})",
-                                score=check.score)
+                # Who is speaking? Several people can be enrolled, each with
+                # their own level of authority.
+                if not self._identify_speaker(utterance):
                     continue
 
                 now = time.monotonic()
@@ -317,6 +353,41 @@ class Assistant:
         finally:
             self._listener_handle = None
             await listener.stop()
+
+
+    def _identify_speaker(self, utterance) -> bool:
+        """Decide whether to answer this voice, and as whom. True = go ahead."""
+        # Several people enrolled: identify, then serve at their level.
+        if self.people.active and self.speaker.available():
+            try:
+                embedding = self.speaker.embed(utterance.pcm)
+            except Exception as exc:
+                log.warning("couldn't embed the voice: %s", exc)
+                self.broker.reset_actor()
+                return True                      # fail open, as everywhere else
+            found = self.people.identify_voice(embedding)
+            authority = self.people.authority_for(found)
+            if authority is Authority.BLOCKED:
+                log.info("ignoring %s (blocked)", found.name)
+                return False
+            self.broker.acting_as(authority, found.name if found.known else "")
+            if found.known:
+                bus.publish(events.INFO,
+                            f"{found.name} ({authority.label})",
+                            person=found.name, authority=authority.label,
+                            score=round(found.score, 2))
+            return True
+
+        # Just one voice enrolled: the simple owner-only check.
+        check = self.speaker.verify(utterance.pcm)
+        if not check.accepted:
+            log.info("ignored another voice (%.2f)", check.score)
+            bus.publish(events.INFO,
+                        f"Ignored - that wasn't your voice ({check.score:.2f})",
+                        score=check.score)
+            return False
+        self.broker.reset_actor()
+        return True
 
     @property
     def mic_level(self) -> float:

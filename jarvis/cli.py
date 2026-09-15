@@ -824,6 +824,169 @@ def cmd_voiceprint(args: argparse.Namespace) -> int:
     return asyncio.run(run())
 
 
+def cmd_commands(args: argparse.Namespace) -> int:
+    """Your own custom commands."""
+    from .core.rules import KIND_INSTRUCT, KIND_REPLY, KIND_RUN, RuleBook
+
+    book = RuleBook(Settings.load())
+    action = (args.action or "list").lower()
+
+    if action == "list":
+        rules = book.all()
+        if not rules:
+            print(dim("\n  No custom commands yet."))
+        else:
+            print(bold("\nYour commands\n"))
+            for rule in rules:
+                print(f"  {dim(rule.id)}  {rule.describe()}")
+                if rule.uses:
+                    print(dim(f"          used {rule.uses}x"))
+        print(dim("\n  Add one by talking:"))
+        print(dim('    "from now on, when I say hey jarvis, say Yes sir"'))
+        print(dim('    "always call me sir"'))
+        print(dim("\n  Or from here:"))
+        print(dim('    jarvis commands add "hey jarvis" "Yes sir"'))
+        print(dim('    jarvis commands always "keep your answers short"'))
+        print(dim("    jarvis commands remove <id>\n"))
+        return 0
+
+    if action in ("add", "do"):
+        if not args.trigger or not args.response:
+            print(red('\n  Usage: jarvis commands add "<phrase>" "<what to say>"\n'))
+            return 1
+        kind = KIND_REPLY if action == "add" else KIND_RUN
+        rule = book.create(args.trigger, args.response, kind=kind,
+                           scope=args.who or "*")
+        print(green(f"\n  Added: {rule.describe()}\n"))
+        return 0
+
+    if action == "always":
+        instruction = args.trigger or args.response
+        if not instruction:
+            print(red('\n  Usage: jarvis commands always "keep answers short"\n'))
+            return 1
+        rule = book.create("", instruction, kind=KIND_INSTRUCT, scope=args.who or "*")
+        print(green(f"\n  Added: {rule.describe()}\n"))
+        return 0
+
+    if action in ("remove", "delete"):
+        if not args.trigger:
+            print(red("\n  Which one? Run `jarvis commands` for the ids.\n"))
+            return 1
+        print(green("\n  Removed.\n") if book.remove(args.trigger)
+              else red("\n  No command with that id.\n"))
+        return 0
+
+    if action in ("on", "off"):
+        if not args.trigger:
+            print(red("\n  Which one? Run `jarvis commands` for the ids.\n"))
+            return 1
+        ok = book.set_enabled(args.trigger, action == "on")
+        print(green(f"\n  Turned {action}.\n") if ok
+              else red("\n  No command with that id.\n"))
+        return 0
+
+    print(red(f"  Unknown action {action!r}."))
+    return 1
+
+
+def cmd_people(args: argparse.Namespace) -> int:
+    """Who JARVIS recognises, and what each of them may ask for."""
+    async def run() -> int:
+        from .core.people import PeopleRegistry
+        from .core.speaker_id import SpeakerVerifier
+        from .core.voice_in import VoiceListener
+
+        config = Config()
+        registry = PeopleRegistry(config.settings)
+        action = (args.action or "list").lower()
+
+        if action == "list":
+            people = registry.all()
+            if not people:
+                print(dim("\n  Nobody enrolled - JARVIS answers anyone."))
+            else:
+                print(bold("\nPeople JARVIS knows\n"))
+                for person in people:
+                    print(f"  {person.describe()}")
+                    print(dim(f"      {person.authority.describe()}"))
+            print(dim("\n  jarvis people add <name> --authority trusted"))
+            print(dim("  jarvis people voice <name>       learn their voice"))
+            print(dim("  jarvis people level <name> --authority guest"))
+            print(dim("  jarvis people remove <name>"))
+            print(dim("\n  Levels: owner (everything) - trusted (can ask, can't"))
+            print(dim("  change anything) - guest (chat only) - blocked (ignored)\n"))
+            return 0
+
+        if not args.name:
+            print(red("\n  Which person?\n"))
+            return 1
+
+        if action == "add":
+            person = registry.add(args.name, args.authority or "guest")
+            print(green(f"\n  {person.describe()}\n"))
+            print(dim(f"  Teach it their voice: jarvis people voice {args.name}\n"))
+            return 0
+
+        if action == "level":
+            try:
+                person = registry.set_authority(args.name, args.authority or "guest")
+            except (KeyError, ValueError) as exc:
+                print(red(f"\n  {exc}\n"))
+                return 1
+            print(green(f"\n  {person.describe()}\n"))
+            return 0
+
+        if action == "remove":
+            print(green("\n  Removed.\n") if registry.remove(args.name)
+                  else red("\n  I don't know anyone by that name.\n"))
+            return 0
+
+        if action == "voice":
+            verifier = SpeakerVerifier(config.settings)
+            if not verifier.available():
+                print(red(f"\n  {verifier.why_unavailable()}\n"))
+                return 1
+            listener = VoiceListener(config)
+            if not listener.available():
+                print(red(f"\n  {listener.why_unavailable()}\n"))
+                return 1
+
+            count = max(1, int(args.samples or 3))
+            print(bold(f"\nLearning {args.name}'s voice"))
+            print(dim(f"  {count} recordings, a full sentence each.\n"))
+
+            embeddings = []
+            for index in range(count):
+                print(f"  {index + 1}/{count}  say something natural")
+                try:
+                    await asyncio.to_thread(input, dim("       press Enter when ready "))
+                except (EOFError, KeyboardInterrupt):
+                    print("\n  Cancelled.\n")
+                    return 1
+                pcm = await listener.microphone.record_utterance(max_seconds=12)
+                seconds = len(pcm) / (16000 * 2)
+                if seconds < 2.0:
+                    print(red(f"       only {seconds:.1f}s - try again"))
+                    continue
+                embeddings.append(verifier.embed(pcm))
+                print(green(f"       got it ({seconds:.1f}s)\n"))
+
+            if not embeddings:
+                print(red("  Nothing usable recorded.\n"))
+                return 1
+
+            person = registry.add_voice(args.name, embeddings,
+                                        authority=args.authority)
+            print(green(f"  Done - {person.describe()}\n"))
+            return 0
+
+        print(red(f"  Unknown action {action!r}."))
+        return 1
+
+    return asyncio.run(run())
+
+
 def cmd_where(args: argparse.Namespace) -> int:
     print(f"""
   {bold('Config')}      {paths.ROOT}
@@ -870,6 +1033,8 @@ def build_parser() -> argparse.ArgumentParser:
   jarvis listen                    test the microphone
   jarvis config models.general claude-haiku-4-5    change a setting
   jarvis voiceprint enrol          teach it your voice, ignore everyone else
+  jarvis commands                  your own custom commands
+  jarvis people                    who it recognises, and what they may ask for
 """)
     parser.add_argument("--version", action="version", version=f"JARVIS {__version__}")
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
@@ -964,6 +1129,24 @@ def build_parser() -> argparse.ArgumentParser:
     voiceprint.set_defaults(func=lambda a: cmd_voiceprint(
         argparse.Namespace(action=("enrol" if a.action == "enroll" else a.action),
                            samples=a.samples)))
+
+    commands = sub.add_parser("commands", help="your own custom commands")
+    commands.add_argument("action", nargs="?", default="list",
+                          choices=["list", "add", "do", "always", "remove",
+                                   "delete", "on", "off"])
+    commands.add_argument("trigger", nargs="?", help="the phrase, or a command id")
+    commands.add_argument("response", nargs="?", help="what to say or do")
+    commands.add_argument("--who", help="only for this person")
+    commands.set_defaults(func=cmd_commands)
+
+    people = sub.add_parser("people", help="who JARVIS recognises and trusts")
+    people.add_argument("action", nargs="?", default="list",
+                        choices=["list", "add", "voice", "level", "remove"])
+    people.add_argument("name", nargs="?")
+    people.add_argument("--authority",
+                        choices=["owner", "trusted", "guest", "blocked"])
+    people.add_argument("--samples", type=int)
+    people.set_defaults(func=cmd_people)
 
     where = sub.add_parser("where", help="print where JARVIS keeps its files")
     where.set_defaults(func=cmd_where)

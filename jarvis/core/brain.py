@@ -168,6 +168,8 @@ class Brain:
         self.providers = build_providers(config)
         self._local_ok = False
         self._local_checked_at = -1e9
+        #: Set by the Assistant. Standing instructions the user has laid down.
+        self.rules: Any = None
 
     # ------------------------------------------------------------------ #
     # Providers
@@ -252,6 +254,13 @@ class Brain:
         ]
         if unattended:
             parts.append(UNATTENDED_BRIEF)
+
+        # The user's own standing instructions outrank the default personality.
+        if self.rules is not None:
+            block = self.rules.instruction_block(self.broker.actor_name or None)
+            if block:
+                parts.append(block)
+
         if extra:
             parts.append(extra)
         return "\n\n".join(parts)
