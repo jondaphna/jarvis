@@ -201,7 +201,8 @@ class Assistant:
         speaker = self.broker.actor_name or None
 
         # "From now on, when I say X, say Y" - remembered, no model needed.
-        if actor_is_owner := (self.broker.actor_authority is Authority.OWNER):
+        # Only the owner may lay down new rules.
+        if self.broker.actor_authority is Authority.OWNER:
             new_rule = parse_rule_command(text)
             if new_rule is not None:
                 new_rule.scope = speaker or new_rule.scope
