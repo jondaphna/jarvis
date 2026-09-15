@@ -338,6 +338,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "daily_spend_cap_usd": 5.0,      # LLM spend guard; 0 disables the cap
     },
 
+    # --- which browser profile "open my Netflix" should use ---------------- #
+    # Blank means "whichever Chrome profile is signed in". Set from the
+    # interface when you have more than one and want a specific one.
+    "browser": {
+        "profile": "",
+    },
+
     # --- your own standing instructions ----------------------------------- #
     # Free text, written by you, folded into the prompt at the start of every
     # call. This is where "never do X", "always call me Y", "my business is Z"

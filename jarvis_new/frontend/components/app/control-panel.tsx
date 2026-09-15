@@ -34,6 +34,7 @@ type Mission = {
   broken?: string;
 };
 type Authorisation = { id: string; label: string; sentence: string };
+type BrowserProfile = { directory: string; name: string; email: string; active?: boolean };
 /** Only the parts the panel actually reads are typed; the rest passes through. */
 type Settings = {
   wake?: { phrase?: string; reply?: string };
@@ -47,6 +48,7 @@ type State = {
   commands: Command[];
   conversations: { id: number; title?: string; updated_at?: string }[];
   plugins: Record<string, string>;
+  browser_profiles: BrowserProfile[];
   authorisations: Authorisation[];
 };
 
@@ -203,6 +205,38 @@ function RulesTab({ state, reload }: { state: State; reload: () => void }) {
         </Btn>
         {saved && (
           <span className="text-xs text-emerald-500">Saved — restart the agent to apply.</span>
+        )}
+      </div>
+
+      <div className="border-border space-y-2 border-t pt-5">
+        <p className="text-sm font-medium">Which browser is yours?</p>
+        <p className="text-muted-foreground text-xs">
+          When you say &quot;open my Netflix&quot;, this is the Chrome profile it opens — the one
+          you&apos;re actually signed into.
+        </p>
+        {state.browser_profiles?.length ? (
+          <select
+            className={inputClass}
+            defaultValue={state.browser_profiles.find((p) => p.active)?.directory ?? ''}
+            onChange={async (e) => {
+              await api('settings', {
+                method: 'POST',
+                body: JSON.stringify({ 'browser.profile': e.target.value }),
+              });
+              reload();
+            }}
+          >
+            {state.browser_profiles.map((p) => (
+              <option key={p.directory} value={p.directory}>
+                {p.name}
+                {p.email ? ` — ${p.email}` : ' — not signed in'}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <p className="text-muted-foreground text-xs">
+            No Chrome profiles found — Jarvis will use Chrome&apos;s default.
+          </p>
         )}
       </div>
 

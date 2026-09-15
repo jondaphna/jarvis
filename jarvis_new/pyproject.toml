@@ -35,6 +35,9 @@ where = ["src"]
 "" = "src"
 
 [tool.pytest.ini_options]
+# src/ for the agent's own modules, and the repo root for chrome_finder, which
+# is shared with the desktop orb and so lives one level up.
+pythonpath = ["src", ".."]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 

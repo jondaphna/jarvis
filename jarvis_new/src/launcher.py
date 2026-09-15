@@ -113,6 +113,33 @@ ALIASES = {
 # Your browser
 # --------------------------------------------------------------------------- #
 
+def browser_profile() -> str:
+    """The Chrome profile to open things in - yours, with your logins."""
+    configured = ""
+    try:
+        from jarvis.config import Settings
+
+        configured = str(Settings.load().get("browser.profile", "") or "")
+    except Exception:
+        pass
+    try:
+        from chrome_finder import preferred_profile
+
+        return preferred_profile(configured)
+    except Exception:
+        return configured or "Default"
+
+
+def chrome_command(chrome: str, *args: str) -> list[str]:
+    """Chrome, pointed at the signed-in profile.
+
+    Without --profile-directory Chrome uses whichever profile it feels like,
+    which on a machine with more than one is how "open my Google" ends up
+    showing somebody else's - or nobody's.
+    """
+    return [chrome, f"--profile-directory={browser_profile()}", *args]
+
+
 def open_in_browser(url: str) -> str:
     """Open a URL in the user's own Chrome, where they're signed in."""
     try:
@@ -122,7 +149,7 @@ def open_in_browser(url: str) -> str:
         chrome = None
 
     if chrome:
-        subprocess.Popen([chrome, url])
+        subprocess.Popen(chrome_command(chrome, url))
         return chrome
     # No Chrome: the default browser is better than refusing.
     import webbrowser

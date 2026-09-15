@@ -20,6 +20,7 @@ Run it with:  butler-orb.bat
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import urllib.request
@@ -27,10 +28,10 @@ import webbrowser
 from pathlib import Path
 
 from PyQt6.QtCore import QPoint, Qt, QTimer
-from PyQt6.QtGui import QAction, QColor, QCursor, QPainter
+from PyQt6.QtGui import QAction, QColor, QCursor, QPainter, QPen
 from PyQt6.QtWidgets import QApplication, QMenu, QWidget
 
-from chrome_finder import chrome_profile, find_chrome
+from chrome_finder import find_chrome, preferred_profile
 
 HERE = Path(__file__).resolve().parent
 WEB_URL = "http://localhost:3000"
@@ -39,9 +40,27 @@ DIAMETER = 86
 MARGIN = 10                      # room for the glow, so it isn't clipped
 CANVAS = DIAMETER + MARGIN * 2
 
+#: The close button, tucked into the top-right corner. Small and set apart
+#: from the middle so a drag never lands on it by accident.
+CLOSE_CENTRE = (CANVAS - 13, 13)
+CLOSE_RADIUS = 10
+
 ACCENT = QColor(0, 212, 255)
 DIM = QColor(90, 100, 125)
 WAKING = QColor(255, 186, 72)
+
+
+def browser_profile() -> str:
+    """The Chrome profile to open Jarvis in - yours, with your logins."""
+    configured = ""
+    try:
+        sys.path.insert(0, str(HERE))
+        from jarvis.config import Settings
+
+        configured = str(Settings.load().get("browser.profile", "") or "")
+    except Exception:
+        pass
+    return preferred_profile(configured)
 
 
 def _state_file() -> Path:
@@ -64,6 +83,8 @@ class Orb(QWidget):
         self._phase = 0.0
         self._online = False
         self._opening = False
+        self._chrome: subprocess.Popen | None = None
+        self._hover_close = False
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -74,7 +95,9 @@ class Orb(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.setToolTip("Jarvis - click to open, drag to move, right-click for more")
+        self.setToolTip("Jarvis - click to open, drag to move, "
+                        "X to close everything")
+        self.setMouseTracking(True)      # so the close button can light up
         self.setFixedSize(CANVAS, CANVAS)
 
         self._restore_position()
@@ -178,10 +201,14 @@ class Orb(QWidget):
                                 int(grow), int(grow))
 
         # The ring itself.
+        #
+        # Built from scratch rather than fetched with painter.pen(): that
+        # returns a copy of the *current* pen, which the glow loop above left
+        # as NoPen. Setting a colour and width on a NoPen pen is perfectly
+        # legal and draws absolutely nothing.
         pen_colour = QColor(colour)
         pen_colour.setAlphaF(0.85)
-        pen = painter.pen()
-        pen.setColor(pen_colour)
+        pen = QPen(pen_colour)
         pen.setWidthF(2.2)
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -211,17 +238,54 @@ class Orb(QWidget):
                        else QColor(150, 160, 180))
         painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "J")
 
+        self._paint_close(painter)
+
+    def _paint_close(self, painter: QPainter) -> None:
+        """The little X that shuts everything down."""
+        cx, cy = CLOSE_CENTRE
+        backing = QColor(18, 20, 34)
+        backing.setAlphaF(0.92 if self._hover_close else 0.55)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(backing)
+        painter.drawEllipse(QPoint(cx, cy), CLOSE_RADIUS, CLOSE_RADIUS)
+
+        stroke = QColor(255, 120, 120) if self._hover_close else QColor(190, 200, 215)
+        pen = QPen(stroke)
+        pen.setWidthF(1.9)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        arm = 3.4
+        painter.drawLine(int(cx - arm), int(cy - arm), int(cx + arm), int(cy + arm))
+        painter.drawLine(int(cx + arm), int(cy - arm), int(cx - arm), int(cy + arm))
+
     # ------------------------------------------------------------------ #
     # Interaction
     # ------------------------------------------------------------------ #
 
+    def _on_close_button(self, position) -> bool:
+        cx, cy = CLOSE_CENTRE
+        dx = position.x() - cx
+        dy = position.y() - cy
+        return (dx * dx + dy * dy) <= (CLOSE_RADIUS + 2) ** 2
+
     def mousePressEvent(self, event) -> None:     # noqa: N802
+        if (event.button() == Qt.MouseButton.LeftButton
+                and self._on_close_button(event.position())):
+            # Checked before the drag starts, or the press would be swallowed
+            # by the move handler and the button would never fire.
+            self.shutdown_everything()
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_from = (event.globalPosition().toPoint()
                                - self.frameGeometry().topLeft())
             self._dragged = False
 
     def mouseMoveEvent(self, event) -> None:      # noqa: N802
+        hovering = self._on_close_button(event.position())
+        if hovering != self._hover_close:
+            self._hover_close = hovering
+            self.update()
         if self._drag_from is None:
             return
         self.move(event.globalPosition().toPoint() - self._drag_from)
@@ -252,9 +316,13 @@ class Orb(QWidget):
         menu.addAction(talk)
 
         menu.addSeparator()
-        quitter = QAction("Hide the orb", menu)
-        quitter.triggered.connect(QApplication.instance().quit)
-        menu.addAction(quitter)
+        hider = QAction("Hide the orb (leave Jarvis running)", menu)
+        hider.triggered.connect(QApplication.instance().quit)
+        menu.addAction(hider)
+
+        closer = QAction("Close Jarvis completely", menu)
+        closer.triggered.connect(self.shutdown_everything)
+        menu.addAction(closer)
 
         menu.exec(event.globalPos())
 
@@ -303,9 +371,12 @@ class Orb(QWidget):
         chrome = find_chrome()
         if chrome:
             try:
-                subprocess.Popen(
-                    [chrome, f"--app={url}", "--new-window",
-                     f"--user-data-dir={chrome_profile()}"],
+                # Your real profile, not a throwaway one. A private
+                # --user-data-dir keeps the microphone permission tidy and is
+                # signed into nothing, so every site it opens is a stranger's.
+                self._chrome = subprocess.Popen(
+                    [chrome, f"--profile-directory={browser_profile()}",
+                     f"--app={url}", "--new-window"],
                     cwd=str(HERE))
                 return
             except Exception:
@@ -315,20 +386,63 @@ class Orb(QWidget):
         webbrowser.open(url)
 
     def start_everything(self) -> None:
-        self._launch("butler-agent.bat")
-        self._launch("butler-web.bat")
+        self._launch("butler-agent.bat", "Jarvis agent")
+        self._launch("butler-web.bat", "Jarvis web")
 
-    def _launch(self, script: str) -> None:
-        """Start one of the .bat files in its own window."""
+    def _launch(self, script: str, title: str = "") -> None:
+        """Start one of the .bat files in its own window.
+
+        The window gets a title beginning "Jarvis " on purpose: that is how the
+        close button finds these again later. `start` treats its first quoted
+        argument as the title, which is why the empty string used to be there.
+        """
         path = HERE / script
         if not path.exists():
             return
         try:
             if sys.platform == "win32":
-                subprocess.Popen(["cmd", "/c", "start", "", str(path)],
-                                 cwd=str(HERE), shell=False)
+                subprocess.Popen(
+                    ["cmd", "/c", "start", title or "Jarvis", str(path)],
+                    cwd=str(HERE), shell=False)
             else:
                 subprocess.Popen(["bash", str(path)], cwd=str(HERE))
+        except Exception:
+            pass
+
+    def shutdown_everything(self) -> None:
+        """Close Jarvis completely: the agent, the web app, the window, the orb.
+
+        No confirmation, because the button is small, deliberately out of the
+        way of the drag area, and nothing here loses work - the conversation is
+        already written to the database as it happens.
+        """
+        if self._chrome is not None:
+            self._kill_tree(self._chrome.pid)
+            self._chrome = None
+
+        if sys.platform == "win32":
+            # Kills the console windows and everything underneath them - the
+            # uv launcher, python, node. Killing only the console would leave
+            # the agent running with nothing on screen to stop it.
+            for pattern in ("Jarvis agent", "Jarvis web", "Jarvis control"):
+                try:
+                    subprocess.run(
+                        ["taskkill", "/FI", f"WINDOWTITLE eq {pattern}*",
+                         "/T", "/F"],
+                        capture_output=True, timeout=10, check=False)
+                except Exception:
+                    pass
+
+        QApplication.instance().quit()
+
+    @staticmethod
+    def _kill_tree(pid: int) -> None:
+        try:
+            if sys.platform == "win32":
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                               capture_output=True, timeout=10, check=False)
+            else:
+                os.kill(pid, 15)
         except Exception:
             pass
 

@@ -279,6 +279,20 @@ class Control:
         except Exception:
             return None
 
+    def browser_profiles(self) -> list[dict[str, str]]:
+        """The Chrome profiles on this machine, named as Chrome names them."""
+        try:
+            from chrome_finder import list_profiles, preferred_profile
+        except Exception:
+            return []
+        try:
+            configured = str(self.config.settings.get("browser.profile", "") or "")
+            active = preferred_profile(configured)
+            return [{**p, "active": p["directory"] == active}
+                    for p in list_profiles()]
+        except Exception:
+            return []
+
     # -- everything at once ------------------------------------------------ #
 
     def state(self) -> dict[str, Any]:
@@ -291,6 +305,7 @@ class Control:
             "conversations": self.conversations(limit=12),
             "runs": self.runs(limit=12),
             "plugins": PLUGINS,
+            "browser_profiles": self.browser_profiles(),
             "authorisations": AUTHORISATIONS,
         }
 
