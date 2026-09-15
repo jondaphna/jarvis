@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useRef } from 'react';
 import { useTheme } from 'next-themes';
 import { AnimatePresence, motion } from 'motion/react';
 import { useSessionContext } from '@livekit/components-react';
@@ -35,6 +36,24 @@ interface ViewControllerProps {
 export function ViewController({ appConfig }: ViewControllerProps) {
   const { isConnected, start } = useSessionContext();
   const { resolvedTheme } = useTheme();
+  const autoStarted = useRef(false);
+
+  /**
+   * Opened from the orb, the page connects on its own so you can just talk.
+   *
+   * Only once per load — `start` changes identity between renders, and
+   * without the ref this would fire again on every one of them.
+   *
+   * The very first time on a new machine the browser still asks for the
+   * microphone, because that permission needs a real click. Allow it once and
+   * every later launch connects silently.
+   */
+  useEffect(() => {
+    if (autoStarted.current || isConnected) return;
+    if (!new URLSearchParams(window.location.search).has('autostart')) return;
+    autoStarted.current = true;
+    void start();
+  }, [start, isConnected]);
 
   return (
     <AnimatePresence mode="wait">

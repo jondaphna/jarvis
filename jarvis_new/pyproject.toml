@@ -12,6 +12,7 @@ dependencies = [
     "livekit-agents[google,images]>=1.6.9",
     "livekit-plugins-ai-coustics~=0.2",
     "playwright>=1.62.0",
+    "psutil>=7.2.2",
     "python-dotenv",
 ]
 

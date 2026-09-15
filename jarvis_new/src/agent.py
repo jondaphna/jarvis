@@ -15,6 +15,8 @@ from livekit.plugins import ai_coustics, google
 
 from brain_memory import JarvisMemory
 from browser import BrowserManager
+from control_api import serve_in_background
+from os_tools import OSTools
 from personalise import extra_instructions, load_rules, load_settings
 from prompts import AGENT_INSTRUCTIONS
 from tools import BrowserTools
@@ -30,6 +32,7 @@ class Assistant(Agent):
         # Memory, your custom commands and the wake phrase. All optional: if
         # any of it can't be loaded the call still happens, just less personal.
         self.memory = memory or JarvisMemory()
+        self.os_tools = OSTools()
         self._settings = load_settings()
         self._rules = load_rules(self._settings)
         self._end_call_tool = EndCallTool(
@@ -64,6 +67,7 @@ class Assistant(Agent):
             tools=[
                 *self.browser_tools.tools,
                 *self.memory.tools,
+                *self.os_tools.tools,
                 *self._end_call_tool.tools,
             ],
         )
@@ -79,6 +83,12 @@ async def my_agent(ctx: JobContext):
     ctx.log_context_fields = {
         "room": ctx.room.name,
     }
+
+    # The settings panel in the web page talks to this. It used to run in its
+    # own minimised window, which meant that when it failed it closed instantly
+    # and the only symptom was "the settings don't work". In here, it fails
+    # where you can read it.
+    serve_in_background()
 
     browser = BrowserManager(headless=False)
     ctx.add_shutdown_callback(browser.close)

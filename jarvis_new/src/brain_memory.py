@@ -97,6 +97,13 @@ class JarvisMemory:
         Deliberately small. The whole history would be both expensive and
         worse: a model given everything answers vaguely, while a model given
         the twenty things that matter sounds like it was paying attention.
+
+        Two things here are hard-won. The *current* conversation is excluded -
+        it was created seconds ago and including it would show the model its
+        own empty room and call it history. And it reaches back through several
+        past conversations rather than only the last one, because the last one
+        is very often "hey Jarvis" and nothing else, which would quietly throw
+        away the real conversation behind it.
         """
         if not self.db:
             return ""
@@ -112,27 +119,50 @@ class JarvisMemory:
         except Exception:
             pass
 
-        try:
-            recent = self.db.recent_conversations(limit=1)
-            if recent and self.db.history:
-                last = recent[0]
-                history = self.db.history(last["id"], limit=6)
-                lines = []
-                for message in history:
-                    role = getattr(message, "role", "")
-                    content = (getattr(message, "content", "") or "").strip()
-                    if content:
-                        who = "They" if role == "user" else "You"
-                        lines.append(f"{who}: {content[:200]}")
-                if lines:
-                    parts.append(
-                        "# Where you left off last time\n"
-                        "Only bring this up if it's relevant.\n\n"
-                        + "\n".join(lines[-6:]))
-        except Exception:
-            pass
+        lines = self.recent_turns(limit=24)
+        if lines:
+            parts.append(
+                "# What you and they have said before\n"
+                "From earlier conversations, oldest first. Don't bring it up "
+                "unprompted, but never claim you can't remember it.\n\n"
+                + "\n".join(lines))
 
         return "\n\n".join(parts)
+
+    def recent_turns(self, limit: int = 24) -> list[str]:
+        """The last few real exchanges, across however many conversations."""
+        if not self.db:
+            return []
+        try:
+            conversations = list(self.db.recent_conversations(limit=8))
+        except Exception:
+            return []
+        # Sorted here rather than trusted: whether "recent" comes back newest
+        # or oldest first is not something to guess at, and getting it wrong
+        # means the trimming below throws away the newest turns instead of the
+        # stalest ones.
+        conversations.sort(key=lambda c: c.get("id") or 0, reverse=True)
+
+        collected: list[str] = []
+        for conversation in conversations:
+            cid = conversation.get("id")
+            if cid is None or cid == self.conversation_id:
+                continue                      # skip the one happening right now
+            try:
+                history = self.db.history(cid, limit=limit)
+            except Exception:
+                continue
+            block: list[str] = []
+            for message in history:
+                role = getattr(message, "role", "")
+                content = (getattr(message, "content", "") or "").strip()
+                if content:
+                    who = "They" if role == "user" else "You"
+                    block.append(f"{who}: {content[:200]}")
+            collected = block + collected     # older conversations first
+            if len(collected) >= limit:
+                break
+        return collected[-limit:]
 
     # ------------------------------------------------------------------ #
     # Tools the model can call

@@ -17,7 +17,12 @@ Double-click these. That's the whole interface.
 | **`butler-orb.bat`** | The floating circle that sits on top of everything. |
 
 **The normal way to use it:** run `butler-orb.bat` once. From then on, click the
-orb — it starts everything for you and opens the app.
+orb — it starts the agent and the web app for you, waits for them, then opens
+Jarvis in Chrome already connected, so you can just talk.
+
+The orb goes amber while it's starting and cyan when it's ready. The first time
+on a new machine, Chrome asks for the microphone — allow it once and every later
+launch connects on its own.
 
 **The order matters.** The web page expects the brain to already be waiting. Start
 it the other way round and the page connects to nothing.
@@ -26,6 +31,7 @@ it the other way round and the page connects to nothing.
 
 | Button | What it does |
 |---|---|
+| **`butler-doctor.bat`** | **Something's wrong?** Checks everything and says what. Start here. |
 | **`butler-check.bat`** | Are my keys still valid? Asks Google and LiveKit directly. |
 | **`butler-keys.bat`** | Re-enter your keys. |
 | **`butler-devices.bat`** | List microphones and speakers with their numbers. |
@@ -108,6 +114,20 @@ Say these exact words, get exactly those words back. No thinking, no variation.
 - Searches everything ever said in past conversations
 - You can edit or delete any of it
 
+### Your computer
+- **Open apps** — "open Spotify", "open Word", "open task manager"
+- **Open folders** — "open my downloads"
+- **Volume** — up, down, mute
+- **Music** — play, pause, next, previous. Works with whatever is playing,
+  because it uses the keyboard's media keys rather than one app's API
+- **How the machine is doing** — processor, memory, disk, battery
+- **Lock the screen**
+- **Shut down, restart, sleep** — always asks first, and one yes authorises
+  exactly one action
+
+There is deliberately no "run any command" tool. A voice assistant that can be
+talked into running arbitrary commands is a security hole with a personality.
+
 ### The browser — it drives a real Chrome
 - Open any site; search the web
 - Read a page and summarise it out loud
@@ -167,6 +187,10 @@ Your keys, memory, tasks and settings live **outside the repo**, in
 
 ## 6. When something goes wrong
 
+**Run `butler-doctor.bat` first.** It checks your keys, the AGENT_NAME match,
+what memory actually holds, whether the settings service is running, and whether
+Chrome is installed — then prints a numbered list of what to fix.
+
 **Read the first error, not the last.** The bottom of a Python traceback is usually
 just the crash; the top says why.
 
@@ -176,6 +200,8 @@ just the crash; the top says why.
 | `invalid x-goog-api-key header` | Something extra got pasted into the key. `butler-keys.bat`. |
 | `failed to connect to livekit` repeating | Wrong LiveKit credentials. `butler-check.bat`. |
 | It can't hear you | Wrong microphone. `butler-devices.bat`, then `butler-talk.bat 1 4`. |
+| It opens in Edge and doesn't work | Install Chrome. The orb uses Chrome specifically. |
+| It forgot what you talked about | `butler-doctor.bat` — it prints what is actually stored. |
 | Settings panel says "control service isn't running" | Run `butler-api.bat`. |
 
 **Check the agent window.** You should see `registered worker`, then a job arriving
@@ -210,6 +236,9 @@ Against your list — what's already there, and what I'd build in what order.
 ### Already done
 | You asked for | Where it is |
 |---|---|
+| Local OS control | Done — apps, folders, volume, music, power |
+| Real-time system monitoring | Done — "how's the machine doing?" |
+| Spotify / audio control | Done via media keys, works with any player |
 | Persistent long-term memory | Done, shared database |
 | Autonomous browser control | Done, 11 tools |
 | Speaker voice biometrics | Built — CLI only, not yet in the web app |

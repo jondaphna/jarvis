@@ -426,6 +426,29 @@ class _Handler(BaseHTTPRequestHandler):
         raise ValueError(f"No route for {method} /api/{'/'.join(parts)}")
 
 
+def serve_in_background(port: int = DEFAULT_PORT) -> bool:
+    """Start the control service alongside the agent, and say so out loud.
+
+    Returns False rather than raising: a settings panel that can't be reached
+    is a nuisance, but it must never be the reason a call fails to start.
+    """
+    try:
+        serve(port=port, background=True)
+        print(f"  Settings service ready on http://127.0.0.1:{port}")
+        return True
+    except OSError as exc:
+        # Already bound is the normal case when the agent restarts quickly.
+        if getattr(exc, "errno", None) in (48, 98, 10048):
+            print(f"  Settings service already running on port {port}.")
+            return True
+        print(f"  Settings service could not start: {exc}")
+        return False
+    except Exception as exc:
+        print(f"  Settings service could not start: {exc}")
+        print("  The voice will still work; only the settings panel is affected.")
+        return False
+
+
 def serve(port: int = DEFAULT_PORT, background: bool = False) -> ThreadingHTTPServer:
     """Start the control API on localhost."""
     _Handler.control = Control()

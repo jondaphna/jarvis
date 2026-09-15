@@ -30,6 +30,8 @@ from PyQt6.QtCore import QPoint, Qt, QTimer
 from PyQt6.QtGui import QAction, QColor, QCursor, QPainter
 from PyQt6.QtWidgets import QApplication, QMenu, QWidget
 
+from chrome_finder import chrome_profile, find_chrome
+
 HERE = Path(__file__).resolve().parent
 WEB_URL = "http://localhost:3000"
 
@@ -39,6 +41,7 @@ CANVAS = DIAMETER + MARGIN * 2
 
 ACCENT = QColor(0, 212, 255)
 DIM = QColor(90, 100, 125)
+WAKING = QColor(255, 186, 72)
 
 
 def _state_file() -> Path:
@@ -60,6 +63,7 @@ class Orb(QWidget):
         self._dragged = False
         self._phase = 0.0
         self._online = False
+        self._opening = False
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -144,8 +148,11 @@ class Orb(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         centre = CANVAS / 2
-        colour = ACCENT if self._online else DIM
-        pulse = (math.sin(self._phase) + 1) / 2          # 0..1
+        # Amber while things are starting up, so a cold start looks like
+        # progress rather than a click that did nothing.
+        colour = WAKING if self._opening else (ACCENT if self._online else DIM)
+        lively = self._online or self._opening
+        pulse = (math.sin(self._phase * (3 if self._opening else 1)) + 1) / 2
         radius = DIAMETER / 2 - 8 + pulse * 2
 
         # Glow. Drawn as stacked translucent rings rather than a gradient so it
@@ -156,7 +163,7 @@ class Orb(QWidget):
         # the first version of this look broken.
         for i in range(7, 0, -1):
             ring = QColor(colour)
-            ring.setAlphaF(0.045 * (1 if self._online else 0.5))
+            ring.setAlphaF(0.045 * (1 if lively else 0.5))
             painter.setBrush(ring)
             painter.setPen(Qt.PenStyle.NoPen)
             grow = min(radius + i * 2.0, CANVAS / 2 - 1)
@@ -176,7 +183,7 @@ class Orb(QWidget):
 
         # The core.
         core = QColor(colour)
-        core.setAlphaF(0.30 + pulse * 0.28 if self._online else 0.16)
+        core.setAlphaF(0.30 + pulse * 0.28 if lively else 0.16)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(core)
         painter.drawEllipse(QPoint(int(centre), int(centre)),
@@ -193,7 +200,7 @@ class Orb(QWidget):
         font.setPointSizeF(DIAMETER * 0.26)
         font.setBold(True)
         painter.setFont(font)
-        painter.setPen(QColor(230, 240, 255) if self._online
+        painter.setPen(QColor(230, 240, 255) if lively
                        else QColor(150, 160, 180))
         painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "J")
 
@@ -249,9 +256,56 @@ class Orb(QWidget):
     # ------------------------------------------------------------------ #
 
     def open_jarvis(self) -> None:
+        """Start whatever isn't running, then open the window and connect."""
         if not self._online:
             self.start_everything()
-        webbrowser.open(WEB_URL)
+            # The web server takes a few seconds to compile on a cold start.
+            # Opening the browser first shows an error page, so wait for it.
+            self._opening = True
+            self.update()
+            QTimer.singleShot(1500, self._open_when_ready)
+            return
+        self._open_window()
+
+    def _open_when_ready(self, attempt: int = 0) -> None:
+        self._check_online()
+        if self._online:
+            self._opening = False
+            self.update()
+            self._open_window()
+            return
+        if attempt > 40:                      # about a minute, then give up
+            self._opening = False
+            self.update()
+            return
+        QTimer.singleShot(1500, lambda: self._open_when_ready(attempt + 1))
+
+    def _open_window(self) -> None:
+        """Open Jarvis in Chrome, connected and listening.
+
+        Chrome specifically, not whatever Windows calls the default browser.
+        On a stock machine that default is Edge, and the voice client does not
+        work there - so "it opened and nothing happened" was really "it opened
+        in the wrong browser".
+
+        --app gives a clean frameless window instead of a tab in whatever you
+        already had open, and autostart tells the page to connect by itself so
+        you can just talk.
+        """
+        url = f"{WEB_URL}/?autostart=1"
+        chrome = find_chrome()
+        if chrome:
+            try:
+                subprocess.Popen(
+                    [chrome, f"--app={url}", "--new-window",
+                     f"--user-data-dir={chrome_profile()}"],
+                    cwd=str(HERE))
+                return
+            except Exception:
+                pass
+        # No Chrome anywhere: better the default browser than nothing, with a
+        # plain URL since --app was the only reason to special-case it.
+        webbrowser.open(url)
 
     def start_everything(self) -> None:
         self._launch("butler-agent.bat")
