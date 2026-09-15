@@ -1,0 +1,12 @@
+# Versions of Jarvis that worked.
+#
+# butler-restore.bat reads this file. Each line is:
+#     name <TAB> commit <TAB> what it was
+#
+# These are commit ids rather than git tags on purpose: the environment this
+# was built in refuses to push tags, so a tag would exist on my machine and
+# not on yours - a restore point that isn't there when you need it is worse
+# than none. Commit ids travel with the branch.
+
+working	14e27d0	Voice works end to end - console and web. The version you confirmed.
+latest	550c12f	Adds memory, the wake phrase, the orb, the settings panel and the guide.

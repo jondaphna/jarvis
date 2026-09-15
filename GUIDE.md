@@ -191,7 +191,11 @@ It never throws anything away — it saves whatever you have onto a backup branc
 first, so undoing the undo is always possible. Your keys, memory and tasks are
 outside the repo and are never touched.
 
-Restore points are git tags named `works-*`. To get back to the newest version:
+The restore points are listed in `RESTORE_POINTS.txt`, by commit rather than by
+git tag — the environment this was built in refuses to push tags, and a restore
+point that isn't there when you need it is worse than none.
+
+To get back to the newest version:
 
 ```
 git checkout claude/personal-ai-assistant-hihz78
