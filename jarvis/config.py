@@ -340,10 +340,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
     # --- realtime voice (LiveKit + Gemini) -------------------------------- #
     "realtime": {
-        "model": "gemini-2.0-flash-live-001",
+        # Must be a model the Gemini Live API still serves, on an API key
+        # rather than Vertex AI. A wrong name here doesn't error - it just
+        # gives you a call where nobody ever speaks.
+        "model": "gemini-2.5-flash-native-audio-preview-12-2025",
         "voice": "Charon",          # Gemini voice name
         "temperature": 0.8,
         "vision": True,             # let it see your camera when you share it
+        "expressive": True,         # hear how you said it, answer in kind
         "greeting": "Hey - I'm here. What are we doing?",
         "url": "",                  # or store LIVEKIT_URL in the vault
     },

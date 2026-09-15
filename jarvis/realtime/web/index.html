@@ -84,11 +84,35 @@
   <div class="muted">Audio runs through this page, so your PC's speaker settings don't matter.</div>
 
 <script type="module">
-import {
-  Room, RoomEvent, Track, createLocalVideoTrack,
-} from "https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.esm.mjs";
-
 const $ = (id) => document.getElementById(id);
+
+// The SDK is pinned to an exact version. "@2" would quietly follow every future
+// 2.x release, and a static `import` that fails takes the whole module with it -
+// no handler runs, nothing is logged where you'd look, the page just sits there
+// looking fine and doing nothing. So: load it by hand, try a second CDN, and if
+// both are unreachable say so on screen.
+const SDK = [
+  "https://cdn.jsdelivr.net/npm/livekit-client@2.22.3/dist/livekit-client.esm.mjs",
+  "https://unpkg.com/livekit-client@2.22.3/dist/livekit-client.esm.mjs",
+];
+
+let Room, RoomEvent, Track, createLocalVideoTrack;
+try {
+  let sdk = null, lastError = null;
+  for (const url of SDK) {
+    try { sdk = await import(url); break; } catch (err) { lastError = err; }
+  }
+  if (!sdk) throw lastError || new Error("no CDN reachable");
+  ({ Room, RoomEvent, Track, createLocalVideoTrack } = sdk);
+} catch (err) {
+  const el = $("status");
+  el.className = "error";
+  el.textContent = "Couldn't load the voice library - check this machine's "
+                 + "internet connection, then reload.";
+  $("connect").disabled = true;
+  throw err;
+}
+
 const statusEl = $("status"), logEl = $("log");
 let room = null, camTrack = null, audioEl = null;
 
@@ -182,10 +206,37 @@ $("connect").onclick = async () => {
     room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
       speaking = speakers.some((s) => s.identity !== room.localParticipant.identity);
     });
+    // A phone that changes Wi-Fi cell drops the connection for a few seconds.
+    // Say so, rather than going quiet and looking broken.
+    room.on(RoomEvent.Reconnecting, () => setStatus("Reconnecting…"));
+    room.on(RoomEvent.Reconnected, () => setStatus("Listening — just talk", "live"));
+    // Browsers block audio that wasn't started by a tap. If that happens the
+    // page is silent with no error at all, so offer the tap.
+    room.on(RoomEvent.AudioPlaybackStatusChanged, () => {
+      if (room && !room.canPlaybackAudio) {
+        setStatus("Tap anywhere to allow sound", "error");
+        const unlock = async () => {
+          try { await room.startAudio(); setStatus("Listening — just talk", "live"); }
+          catch (_) { /* they'll get another tap */ }
+        };
+        document.body.addEventListener("click", unlock, { once: true });
+      }
+    });
+    room.on(RoomEvent.MediaDevicesError, (err) => {
+      setStatus("Microphone blocked — allow it in your browser, then reload",
+                "error");
+      console.error(err);
+    });
     room.on(RoomEvent.Disconnected, () => {
       setStatus("Disconnected");
       $("connect").textContent = "Start talking";
       $("mute").disabled = $("camera").disabled = true;
+      $("mute").textContent = "Mute";
+      $("mute").classList.remove("on");
+      $("camera").classList.remove("on");
+      $("preview").classList.remove("on");
+      if (camTrack) { camTrack.stop(); camTrack = null; }
+      if (audioEl) { audioEl.remove(); audioEl = null; }
       room = null;
     });
     room.on(RoomEvent.TranscriptionReceived, (segments, participant) => {
@@ -209,11 +260,15 @@ $("connect").onclick = async () => {
     $("connect").textContent = "Hang up";
     $("mute").disabled = $("camera").disabled = false;
   } catch (err) {
+    // Leave nothing half-connected behind, or the next attempt inherits it.
+    if (room) { try { await room.disconnect(); } catch (_) {} room = null; }
     setStatus(err.message || String(err), "error");
   } finally {
     $("connect").disabled = false;
   }
 };
+
+addEventListener("pagehide", () => { if (room) room.disconnect(); });
 
 $("mute").onclick = async () => {
   if (!room) return;

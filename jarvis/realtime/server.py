@@ -34,6 +34,10 @@ _MAX_ATTEMPTS = 8
 _LOCKOUT_SECONDS = 300
 
 
+class PortInUse(OSError):
+    """The web port is taken - said in words, not as a raw socket error."""
+
+
 class _Gate:
     """Tracks PIN attempts per client address."""
 
@@ -81,6 +85,20 @@ class _Handler(BaseHTTPRequestHandler):
         # This page is only ever served to you; nothing may embed it.
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        # The page may load the LiveKit SDK and talk to LiveKit, and nothing
+        # else. If something ever manages to inject a script tag here, it has
+        # nowhere to send what it finds.
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net "
+            "https://unpkg.com; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob:; media-src 'self' blob:; "
+            "connect-src 'self' https://cdn.jsdelivr.net https://unpkg.com "
+            "wss: https:; "
+            "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(body)
 
@@ -125,16 +143,38 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(404, b"not found", "text/plain")
 
 
+def _outbound_address() -> str:
+    """The address this machine uses to reach the local network.
+
+    Asking the OS to resolve our own hostname is the usual trick and it is not
+    reliable: plenty of machines answer 127.0.1.1, and some answer nothing.
+    Opening a UDP socket towards the network picks the interface the phone will
+    actually come in on. Nothing is sent - UDP connect only sets a route.
+    """
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("192.168.255.255", 9))
+        return str(probe.getsockname()[0])
+    except OSError:
+        return ""
+    finally:
+        probe.close()
+
+
 def local_addresses(port: int, scheme: str = "http") -> list[str]:
     """Addresses this machine can be reached on, for the phone."""
     urls = [f"{scheme}://localhost:{port}"]
+
+    def offer(address: str) -> None:
+        url = f"{scheme}://{address}:{port}"
+        if address and not address.startswith("127.") and url not in urls:
+            urls.append(url)
+
+    offer(_outbound_address())
     try:
         hostname = socket.gethostname()
         for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
-            address = info[4][0]
-            url = f"{scheme}://{address}:{port}"
-            if not address.startswith("127.") and url not in urls:
-                urls.append(url)
+            offer(info[4][0])
     except OSError:
         pass
     return urls
@@ -151,7 +191,14 @@ def serve(config, port: int = 8787, lan: bool = False,
     _Handler.room = room
 
     host = "0.0.0.0" if lan else "127.0.0.1"
-    server = ThreadingHTTPServer((host, port), _Handler)
+    try:
+        server = ThreadingHTTPServer((host, port), _Handler)
+    except OSError as exc:
+        raise PortInUse(
+            f"Port {port} is already in use ({exc}).\n"
+            f"  Another JARVIS may still be running, or something else has it.\n"
+            f"  Pick a different one:  python -m jarvis realtime --port {port + 1}"
+        ) from exc
     scheme = "http"
 
     # A phone on http://192.168.x.x is not a "secure context", so the browser

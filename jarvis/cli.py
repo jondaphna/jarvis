@@ -1065,12 +1065,17 @@ def cmd_realtime(args: argparse.Namespace) -> int:
     # Fail loudly here rather than letting the worker retry invisibly.
     from .realtime.agent import preflight
 
-    trouble = preflight(config)
+    trouble, fatal = preflight(config)
     if trouble:
-        print(red(f"\n  {trouble}\n"))
-        return 1
+        print((red if fatal else yellow)(f"\n  {trouble}\n"))
+        if fatal:
+            return 1
 
-    web, pin, scheme = rt_server.serve(config, port=args.port, lan=args.lan)
+    try:
+        web, pin, scheme = rt_server.serve(config, port=args.port, lan=args.lan)
+    except rt_server.PortInUse as exc:
+        print(red(f"\n  {exc}\n"))
+        return 1
     print(BANNER)
     print(bold("  Realtime voice is up.\n"))
 

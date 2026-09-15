@@ -27,15 +27,41 @@ def credentials(config) -> tuple[str, str, str]:
             "  1. Sign up at cloud.livekit.io and make a project\n"
             "  2. Copy its URL, API key and secret\n"
             "  3. Run:  jarvis keys set " + "  /  jarvis keys set ".join(missing))
-    return str(url), str(key), str(secret)
+    return normalise_url(str(url)), str(key), str(secret)
 
 
-def mint(config, identity: str = "you", room: str = DEFAULT_ROOM,
+def normalise_url(url: str) -> str:
+    """Accept the project URL however it was copied.
+
+    LiveKit speaks WebSocket, but the project page shows an https:// address
+    too and that is the one people paste. Connecting with it fails in the
+    browser with nothing useful on screen, so fix it here instead of making
+    that someone's afternoon.
+    """
+    url = url.strip().rstrip("/")
+    if url.startswith("https://"):
+        return "wss://" + url[len("https://"):]
+    if url.startswith("http://"):
+        return "ws://" + url[len("http://"):]
+    if not url.startswith(("ws://", "wss://")) and url:
+        return "wss://" + url
+    return url
+
+
+def mint(config, identity: str = "", room: str = DEFAULT_ROOM,
          minutes: int = 120) -> dict[str, str]:
-    """A join token for one participant."""
+    """A join token for one participant.
+
+    The identity is unique per token on purpose. LiveKit treats identity as the
+    primary key for a participant, so two devices sharing one - your laptop and
+    your phone, or the same page opened twice - means the second arrival
+    silently evicts the first. Naming everyone "you" would make picking up your
+    phone hang up your desktop.
+    """
     from livekit import api
 
     url, key, secret = credentials(config)
+    identity = identity or f"you-{secrets.token_hex(4)}"
     token = (
         api.AccessToken(key, secret)
         .with_identity(identity)

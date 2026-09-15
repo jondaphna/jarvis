@@ -251,18 +251,7 @@ jarvis keys set GEMINI_API_KEY       # free at aistudio.google.com
 
 Then pick how LiveKit runs — **either works, and both are free**:
 
-**On your own machine** (no account, no sign-up):
-
-```bash
-jarvis realtime --install-server     # one time, ~50MB
-jarvis realtime --local
-```
-
-That fetches the official LiveKit release from GitHub and starts it for you
-whenever you use `--local` — no second terminal to keep open. (There is no
-winget package for it, despite what you may read.)
-
-**Or LiveKit Cloud** (nothing to install, works away from home):
+**LiveKit Cloud** (nothing to install, and it works away from home):
 
 ```bash
 jarvis keys set LIVEKIT_URL          # from cloud.livekit.io
@@ -272,10 +261,36 @@ jarvis keys set LIVEKIT_API_SECRET
 jarvis realtime
 ```
 
-Local mode is the better default: everything but the Gemini call stays on your
-machine, and there is no account to sign up for.
+The URL can be pasted in whatever form you copied it — `wss://…`, `https://…`
+or the bare hostname. JARVIS converts it.
+
+**Or on your own machine** (no account, no sign-up):
+
+```bash
+jarvis realtime --install-server     # one time, ~50MB
+jarvis realtime --local
+```
+
+That fetches the official LiveKit release from GitHub and starts it for you
+whenever you use `--local` — no second terminal to keep open. (There is no
+winget package for it, despite what you may read.) Everything but the Gemini
+call stays on your machine.
 
 Open the link it prints, press **Start talking**, and talk.
+
+### If the page connects but nothing is ever said
+
+That is the one failure worth knowing about, because every part of it looks
+healthy. Three causes, and JARVIS now catches all three:
+
+* **A retired model.** The Gemini Live API drops model names over time, and a
+  dead name isn't an error — the call just stays silent. JARVIS checks the name
+  at startup and swaps in a working one, saying so in the log.
+* **A Vertex-only model.** `gemini-live-2.5-flash-native-audio` reads like the
+  newest and best, and cannot be used with a free API key at all. Use the
+  default unless you know you want otherwise.
+* **Wrong LiveKit credentials.** The worker retries for ever. After a few
+  attempts JARVIS prints what to check instead of letting it scroll.
 
 **On your phone**, on the same Wi-Fi:
 

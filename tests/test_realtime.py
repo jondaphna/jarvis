@@ -437,9 +437,29 @@ class TestWorkerStartup:
         config.vault.set("LIVEKIT_API_KEY", "key")
         config.vault.set("LIVEKIT_API_SECRET", "secret")
 
-        trouble = agent.preflight(config)
+        trouble, fatal = agent.preflight(config)
         assert "Couldn't reach" in trouble
         assert "ws://127.0.0.1:1" in trouble
+        assert fatal, "a dead server on this machine should stop the launch"
+
+    def test_a_cloud_hiccup_warns_but_does_not_block(self, settings, monkeypatch):
+        """LiveKit Cloud sits behind a CDN that can refuse a plain health check
+        on a perfectly good project. Refusing to start on that would be worse
+        than the problem it guards against."""
+        from jarvis.config import Config
+        from jarvis.realtime import agent
+
+        for name in ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"):
+            monkeypatch.delenv(name, raising=False)
+
+        config = Config()
+        config.vault.set("LIVEKIT_URL", "wss://nothing.invalid")
+        config.vault.set("LIVEKIT_API_KEY", "key")
+        config.vault.set("LIVEKIT_API_SECRET", "secret")
+
+        trouble, fatal = agent.preflight(config)
+        assert trouble, "it should still say something"
+        assert not fatal, "a cloud hiccup must not block startup"
 
     def test_preflight_passes_against_a_live_server(self, settings, monkeypatch):
         import http.server
@@ -467,6 +487,239 @@ class TestWorkerStartup:
             config.vault.set("LIVEKIT_URL", f"ws://127.0.0.1:{port}")
             config.vault.set("LIVEKIT_API_KEY", "key")
             config.vault.set("LIVEKIT_API_SECRET", "secret")
-            assert agent.preflight(config) == ""
+            assert agent.preflight(config) == ("", False)
         finally:
             server.shutdown()
+
+
+class TestThingsThatSilentlyBreakTheCall:
+    """Each of these once failed with no error you could see.
+
+    That is the whole danger of this path: a wrong model name, a shared
+    identity or a locked vault doesn't crash - the browser just sits there
+    saying "Listening" while nothing ever happens. So they get tests.
+    """
+
+    def test_the_default_model_is_one_the_live_api_still_serves(self):
+        """`gemini-2.0-flash-live-001` was the obvious choice and is retired.
+        Pointing at a dead model gets you a silent call, not an error."""
+        from jarvis.realtime import agent
+
+        known = agent._known("LiveAPIModels")
+        if not known:
+            import pytest
+            pytest.skip("the google plugin isn't installed here")
+        assert agent.DEFAULT_MODEL in known, (
+            f"{agent.DEFAULT_MODEL} is not in {known} - the call would be silent")
+
+    def test_the_default_model_works_with_an_api_key_not_just_vertex(self):
+        """`gemini-live-2.5-flash-native-audio` reads like the newest and best
+        model and is Vertex-only - it cannot be used with the free key at all."""
+        try:
+            from livekit.plugins.google.realtime import realtime_api
+        except Exception:
+            import pytest
+            pytest.skip("the google plugin isn't installed here")
+
+        from jarvis.realtime import agent
+
+        assert agent.DEFAULT_MODEL not in realtime_api.KNOWN_VERTEXAI_MODELS
+        assert agent.DEFAULT_MODEL in realtime_api.KNOWN_GEMINI_API_MODELS
+
+    def test_the_settings_default_matches_the_code_default(self):
+        """Changing one and not the other leaves the stale name winning, since
+        the setting is what is actually read."""
+        from jarvis.config import DEFAULT_SETTINGS
+        from jarvis.realtime import agent
+
+        assert DEFAULT_SETTINGS["realtime"]["model"] == agent.DEFAULT_MODEL
+
+    def test_a_retired_model_in_an_old_config_is_replaced_not_honoured(self):
+        """A config file written months ago still names whatever was current
+        then. Honouring it would mean a silent call."""
+        import inspect
+
+        from jarvis.realtime import agent
+
+        source = inspect.getsource(agent.JarvisRealtime.build_agent)
+        assert "name = DEFAULT_MODEL if DEFAULT_MODEL in models else models[0]" \
+            in source
+
+    def test_the_default_voice_exists(self):
+        from jarvis.realtime import agent
+
+        known = agent._known("Voice")
+        if not known:
+            import pytest
+            pytest.skip("the google plugin isn't installed here")
+        assert agent.DEFAULT_VOICE in known
+
+    def test_every_device_gets_its_own_identity(self, settings, monkeypatch):
+        """LiveKit keys participants by identity, so a shared one means your
+        phone joining hangs up your laptop."""
+        from jarvis.config import Config
+        from jarvis.realtime.tokens import mint
+
+        for name in ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"):
+            monkeypatch.delenv(name, raising=False)
+
+        config = Config()
+        config.vault.set("LIVEKIT_URL", "wss://example.livekit.cloud")
+        config.vault.set("LIVEKIT_API_KEY", "key123")
+        config.vault.set("LIVEKIT_API_SECRET", "secret456789abcdef")
+
+        first = mint(config)["identity"]
+        second = mint(config)["identity"]
+        assert first != second
+        assert first.startswith("you-") and second.startswith("you-")
+
+    def test_the_call_runs_in_this_process_so_the_vault_stays_open(self):
+        """The passphrase lives in memory here. A subprocess would build a
+        fresh, locked Config, find no Gemini key, and die out of sight."""
+        import inspect
+
+        from jarvis.realtime import agent
+
+        source = inspect.getsource(agent.build_server)
+        assert "JobExecutorType.THREAD" in source
+
+    def test_the_project_url_is_accepted_however_it_was_copied(self):
+        """The LiveKit project page shows an https:// address too, and that is
+        the one people paste."""
+        from jarvis.realtime.tokens import normalise_url
+
+        for given in ("https://x.livekit.cloud", "wss://x.livekit.cloud",
+                      "x.livekit.cloud", "https://x.livekit.cloud/"):
+            assert normalise_url(given) == "wss://x.livekit.cloud"
+        assert normalise_url("http://localhost:7880") == "ws://localhost:7880"
+        assert normalise_url("") == ""
+
+
+class TestTheWebPage:
+    """The page is the whole product on a phone. If it fails it must say so."""
+
+    def _page(self):
+        from jarvis.realtime.server import WEB_DIR
+        return (WEB_DIR / "index.html").read_text(encoding="utf-8")
+
+    def test_the_sdk_is_pinned_to_an_exact_version(self):
+        """A floating "@2" silently follows every future release."""
+        import re
+
+        page = self._page()
+        for url in re.findall(r"https://[^\"']*livekit-client[^\"']*", page):
+            assert re.search(r"livekit-client@\d+\.\d+\.\d+/", url), url
+
+    def test_a_failed_sdk_load_is_visible(self):
+        """A static import that fails takes the module with it and the page
+        just sits there looking fine."""
+        page = self._page()
+        assert "await import(" in page
+        assert "Couldn't load the voice library" in page
+
+    def test_it_only_uses_events_the_sdk_really_has(self):
+        """Typos here are silent: the handler is simply never called."""
+        import re
+
+        page = self._page()
+        used = set(re.findall(r"RoomEvent\.(\w+)", page))
+        assert used, "the page should be listening for something"
+        real = {
+            "TrackSubscribed", "ActiveSpeakersChanged", "Disconnected",
+            "TranscriptionReceived", "Reconnecting", "Reconnected",
+            "AudioPlaybackStatusChanged", "MediaDevicesError",
+        }
+        assert used <= real, f"not in livekit-client v2: {used - real}"
+
+    def test_closing_the_tab_hangs_up(self):
+        assert "pagehide" in self._page()
+
+
+class TestWebServerHeaders:
+    def test_the_page_is_served_with_a_content_security_policy(self, settings,
+                                                               monkeypatch):
+        import urllib.request
+
+        from jarvis.config import Config
+        from jarvis.realtime import server as rt
+
+        for name in ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"):
+            monkeypatch.delenv(name, raising=False)
+        config = Config()
+        config.vault.set("LIVEKIT_URL", "wss://example.livekit.cloud")
+        config.vault.set("LIVEKIT_API_KEY", "key123")
+        config.vault.set("LIVEKIT_API_SECRET", "secret456789abcdef")
+
+        web, _, _ = rt.serve(config, port=0, lan=False)
+        try:
+            port = web.server_address[1]
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({}))
+            with opener.open(f"http://127.0.0.1:{port}/", timeout=5) as resp:
+                policy = resp.headers["Content-Security-Policy"]
+            assert policy and "default-src 'none'" in policy
+            assert "frame-ancestors 'none'" in policy
+        finally:
+            web.shutdown()
+
+    def test_a_taken_port_is_explained_not_raised_raw(self, settings):
+        import socket
+
+        from jarvis.config import Config
+        from jarvis.realtime import server as rt
+
+        holder = socket.socket()
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        try:
+            port = holder.getsockname()[1]
+            try:
+                rt.serve(Config(), port=port, lan=False)
+            except rt.PortInUse as exc:
+                assert "already in use" in str(exc)
+                assert "--port" in str(exc)
+            else:
+                raise AssertionError("expected PortInUse")
+        finally:
+            holder.close()
+
+
+class TestFailuresYouCanActuallySee:
+    def test_the_retry_loop_explains_itself(self, capsys):
+        """LiveKit logs "failed to connect, retrying in 2s" for ever without
+        ever saying why - under a banner that already said everything was up."""
+        import logging
+
+        from jarvis.realtime.agent import _explain_connection_failures
+
+        livekit_log = logging.getLogger("livekit")
+        before = list(livekit_log.handlers)
+        try:
+            _explain_connection_failures(threshold=2)
+            livekit_log.warning("failed to connect to livekit, retrying in 0s")
+            assert "can't connect" not in capsys.readouterr().out.lower(), \
+                "one blip shouldn't shout"
+
+            livekit_log.warning("failed to connect to livekit, retrying in 2s")
+            out = capsys.readouterr().out
+            assert "can't connect to LiveKit" in out
+            assert "LIVEKIT_URL" in out
+
+            livekit_log.warning("failed to connect to livekit, retrying in 4s")
+            assert capsys.readouterr().out == "", "say it once, not every retry"
+        finally:
+            livekit_log.handlers = before
+
+    def test_unrelated_warnings_are_left_alone(self, capsys):
+        import logging
+
+        from jarvis.realtime.agent import _explain_connection_failures
+
+        livekit_log = logging.getLogger("livekit")
+        before = list(livekit_log.handlers)
+        try:
+            _explain_connection_failures(threshold=1)
+            livekit_log.warning("some other thing happened")
+            assert capsys.readouterr().out == ""
+        finally:
+            livekit_log.handlers = before
