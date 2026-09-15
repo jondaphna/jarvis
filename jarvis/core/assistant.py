@@ -21,6 +21,7 @@ from .grants import parse_app_allowances
 from .memory import Memory
 from .permissions import PermissionBroker
 from .scheduler import MissionScheduler
+from .speaker_id import SpeakerVerifier
 from .tools import ToolRegistry
 from .voice_in import ContinuousListener, VoiceListener, contains_wake_word
 from .voice_out import SpeechEngine
@@ -79,6 +80,7 @@ class Assistant:
         self.brain = Brain(self.config, self.memory, self.broker, self.tools)
         self.scheduler = MissionScheduler(self)
         self.speech = SpeechEngine(self.config)
+        self.speaker = SpeakerVerifier(self.settings)
         self.listener = VoiceListener(self.config)
 
         self.conversation_id: int | None = None
@@ -143,6 +145,8 @@ class Assistant:
                 "input_ready": self.listener.available(),
                 "input_problem": self.listener.why_unavailable(),
                 "output": self.speech.describe(),
+                "speaker_id": self.speaker.describe(),
+                "speaker_id_ready": self.speaker.available(),
             },
             "plugins": self.plugins.catalogue(),
             "plugin_errors": self.plugins.errors,
@@ -272,6 +276,15 @@ class Assistant:
                 # Don't let JARVIS answer its own voice coming back through the
                 # speakers - that loops forever.
                 if self.speech.speaking:
+                    continue
+
+                # Whose voice was that? Off unless enrolled and switched on.
+                check = self.speaker.verify(utterance.pcm)
+                if not check.accepted:
+                    log.info("ignored another voice (%.2f)", check.score)
+                    bus.publish(events.INFO,
+                                f"Ignored - that wasn't your voice ({check.score:.2f})",
+                                score=check.score)
                     continue
 
                 now = time.monotonic()

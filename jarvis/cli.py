@@ -696,6 +696,134 @@ def cmd_keys(args: argparse.Namespace) -> int:
     return 0
 
 
+
+def cmd_voiceprint(args: argparse.Namespace) -> int:
+    """Teach JARVIS your voice, so it ignores everyone else."""
+    async def run() -> int:
+        from .core.speaker_id import RECOMMENDED_SAMPLES, SpeakerVerifier
+        from .core.voice_in import VoiceListener
+
+        config = Config()
+        settings = config.settings
+        verifier = SpeakerVerifier(settings)
+        action = (args.action or "status").lower()
+
+        # --- simple state changes ------------------------------------- #
+        if action == "forget":
+            removed = verifier.forget()
+            print(green("\n  Voiceprint deleted; matching switched off.\n")
+                  if removed else dim("\n  There was nothing stored.\n"))
+            return 0
+
+        if action in ("on", "off"):
+            if action == "on" and not verifier.enrolled:
+                print(red("\n  Nothing enrolled yet. Run: jarvis voiceprint enrol\n"))
+                return 1
+            settings.set("voice.only_my_voice", action == "on")
+            settings.save()
+            print(green(f"\n  Voice matching {action}.\n"))
+            return 0
+
+        if action == "status":
+            print(bold("\nVoiceprint"))
+            print(f"  {verifier.describe()}")
+            print(f"  model: {cyan('ready') if verifier.available() else red('not installed')}")
+            if not verifier.available():
+                print(dim(f"  {verifier.why_unavailable().splitlines()[0]}"))
+            print(dim("""
+  jarvis voiceprint enrol    teach it your voice
+  jarvis voiceprint test     check whether it recognises you
+  jarvis voiceprint on|off   only respond to you
+  jarvis voiceprint forget   delete the stored voiceprint
+
+  Stored on this machine only, as numbers - never the audio, never uploaded.
+"""))
+            return 0
+
+        # --- the ones that need a microphone --------------------------- #
+        if not verifier.available():
+            print(red(f"\n  {verifier.why_unavailable()}\n"))
+            return 1
+
+        listener = VoiceListener(config)
+        if not listener.available():
+            print(red(f"\n  {listener.why_unavailable()}\n"))
+            return 1
+
+        if action == "test":
+            if not verifier.enrolled:
+                print(red("\n  Nothing enrolled yet. Run: jarvis voiceprint enrol\n"))
+                return 1
+            print(dim("\n  Say a sentence...\n"))
+            pcm = await listener.microphone.record_utterance(max_seconds=8)
+            if not pcm:
+                print(red("  I didn't hear anything.\n"))
+                return 1
+            score = verifier.score(pcm)
+            threshold = verifier.threshold()
+            verdict = (green("that's you") if score >= threshold
+                       else red("not recognised"))
+            print(f"  similarity {bold(f'{score:.2f}')} vs threshold "
+                  f"{threshold:.2f} - {verdict}\n")
+            if score < threshold:
+                print(dim("  If that was you, add more samples:\n"
+                          "    jarvis voiceprint enrol\n"
+                          "  or loosen it:\n"
+                          "    jarvis config voice.speaker_threshold 0.62\n"))
+            return 0
+
+        if action == "enrol":
+            count = max(1, int(args.samples or RECOMMENDED_SAMPLES))
+            print(bold("\nTeaching JARVIS your voice"))
+            print(dim(f"  {count} recordings, a full sentence each. Speak normally,\n"
+                      "  from where you usually sit.\n"))
+
+            prompts = [
+                "Jarvis, open my workspace and tell me what's in it.",
+                "What's the weather looking like this afternoon?",
+                "Remind me what I asked you to do last night.",
+                "Let's get the videos ready for tomorrow morning.",
+            ]
+            samples = []
+            for index in range(count):
+                phrase = prompts[index % len(prompts)]
+                print(f'  {index + 1}/{count}  say: "{cyan(phrase)}"')
+                try:
+                    await asyncio.to_thread(input, dim("       press Enter when ready "))
+                except (EOFError, KeyboardInterrupt):
+                    print("\n  Cancelled.\n")
+                    return 1
+                pcm = await listener.microphone.record_utterance(max_seconds=12)
+                seconds = len(pcm) / (16000 * 2)
+                if seconds < 2.0:
+                    print(red(f"       only got {seconds:.1f}s - let's try that one again"))
+                    continue
+                samples.append(pcm)
+                print(green(f"       got it ({seconds:.1f}s)\n"))
+
+            if not samples:
+                print(red("  Nothing usable recorded.\n"))
+                return 1
+
+            try:
+                profile = verifier.enrol(samples)
+            except ValueError as exc:
+                print(red(f"  {exc}\n"))
+                return 1
+
+            settings.set("voice.only_my_voice", True)
+            settings.save()
+            print(green(f"  Done - {profile.sample_count} sample(s) stored, "
+                        f"matching switched on."))
+            print(dim("  Check it with: jarvis voiceprint test\n"))
+            return 0
+
+        print(red(f"  Unknown action {action!r}."))
+        return 1
+
+    return asyncio.run(run())
+
+
 def cmd_where(args: argparse.Namespace) -> int:
     print(f"""
   {bold('Config')}      {paths.ROOT}
@@ -741,6 +869,7 @@ def build_parser() -> argparse.ArgumentParser:
   jarvis say "hello"               test the voice out loud
   jarvis listen                    test the microphone
   jarvis config models.general claude-haiku-4-5    change a setting
+  jarvis voiceprint enrol          teach it your voice, ignore everyone else
 """)
     parser.add_argument("--version", action="version", version=f"JARVIS {__version__}")
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
@@ -825,6 +954,16 @@ def build_parser() -> argparse.ArgumentParser:
     config.add_argument("key", nargs="?", help="e.g. models.general")
     config.add_argument("value", nargs="?", help="omit to read it")
     config.set_defaults(func=cmd_config)
+
+    voiceprint = sub.add_parser(
+        "voiceprint", help="teach JARVIS your voice so it ignores others")
+    voiceprint.add_argument(
+        "action", nargs="?", default="status",
+        choices=["status", "enrol", "enroll", "test", "on", "off", "forget"])
+    voiceprint.add_argument("--samples", type=int, help="how many recordings")
+    voiceprint.set_defaults(func=lambda a: cmd_voiceprint(
+        argparse.Namespace(action=("enrol" if a.action == "enroll" else a.action),
+                           samples=a.samples)))
 
     where = sub.add_parser("where", help="print where JARVIS keeps its files")
     where.set_defaults(func=cmd_where)

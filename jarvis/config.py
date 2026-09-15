@@ -306,6 +306,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "wake_word": "jarvis",
         # Start listening the moment JARVIS opens - no button press needed.
         "always_listening": True,
+        # Respond only to the enrolled voice. Needs `jarvis voiceprint enrol`
+        # first; harmless to switch on before that (it just does nothing).
+        "only_my_voice": False,
+        "speaker_threshold": 0.70,
         # After a reply, keep listening this long without needing the wake word.
         "follow_up_seconds": 12,
         "hotkey": "ctrl+space",

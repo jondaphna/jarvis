@@ -29,6 +29,10 @@ pyautogui>=0.9.54         # keyboard and mouse
 pyperclip>=1.8.2          # clipboard
 psutil>=5.9.0             # machine stats
 
+# --- voice recognition (optional) ------------------------------------------
+# Lets JARVIS respond only to your voice. Computed and stored locally.
+resemblyzer>=0.1.4
+
 # --- optional extras -------------------------------------------------------
 PyJWT>=2.8.0              # only needed for the Kling video plugin
 pyttsx3>=2.90             # offline fallback voice

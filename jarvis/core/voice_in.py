@@ -47,6 +47,9 @@ class Utterance:
     seconds: float = 0.0
     engine: str = ""
     confidence: float | None = None
+    #: The raw 16kHz mono PCM this was transcribed from. Kept so the speaker
+    #: verifier can check whose voice it was without recording twice.
+    pcm: bytes = b""
 
     def __bool__(self) -> bool:
         return bool(self.text.strip())
@@ -262,7 +265,7 @@ class Transcriber:
             raise TranscriptionError(f"Transcription failed: {exc}") from exc
 
         utterance = Utterance(text.strip(), seconds=seconds, engine=name,
-                              confidence=confidence)
+                              confidence=confidence, pcm=pcm)
         if utterance:
             bus.publish(events.TRANSCRIPT, utterance.text, engine=name)
         return utterance

@@ -26,9 +26,10 @@ voice = [
     "numpy>=1.26.0",
 ]
 control = ["mss>=9.0.1", "pyautogui>=0.9.54", "pyperclip>=1.8.2", "psutil>=5.9.0"]
+speaker = ["resemblyzer>=0.1.4"]
 media = ["PyJWT>=2.8.0"]
 dev = ["pytest>=8.0.0", "pytest-asyncio>=0.23.0", "pyinstaller>=6.4.0"]
-all = ["jarvis-assistant[ui,voice,control,media]"]
+all = ["jarvis-assistant[ui,voice,control,media,speaker]"]
 
 [project.scripts]
 jarvis = "jarvis.cli:main"

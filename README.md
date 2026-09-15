@@ -272,6 +272,34 @@ it opt-in.
 
 ---
 
+## Only listening to you
+
+JARVIS can learn your voice and ignore everybody else — useful if the TV is on,
+or people are talking nearby.
+
+```bash
+pip install resemblyzer
+jarvis voiceprint enrol      # say three sentences
+jarvis voiceprint test       # check it recognises you
+```
+
+That switches it on. Other commands: `jarvis voiceprint on|off|forget|status`.
+
+**What it does with your voice:** the recording is turned into a list of numbers
+on your machine, and only those numbers are saved. The audio is never stored and
+nothing is ever uploaded — not to Claude, not anywhere. Delete it whenever you
+like with `jarvis voiceprint forget`.
+
+**What it is not:** a security control. A decent recording of your voice would
+pass it. It's a filter for background chatter, nothing more — so nothing that
+actually matters (spending, posting, sending mail) depends on it. Those still go
+through the permission system.
+
+If it keeps missing you, add more samples (`jarvis voiceprint enrol`) or loosen
+it: `jarvis config voice.speaker_threshold 0.62`.
+
+---
+
 ## The floating orb
 
 Close the main window and JARVIS doesn't go away — a small circle stays on top of
@@ -397,6 +425,7 @@ jarvis devices          list microphones and speakers; --set-input / --set-outpu
 jarvis say "hello"      speak a line out loud (tests audio output)
 jarvis listen           record one sentence (tests the microphone)
 jarvis config KEY VALUE read or change any setting
+jarvis voiceprint       enrol/test/on/off/forget your voiceprint
 jarvis where            where JARVIS keeps its files
 ```
 
@@ -478,7 +507,7 @@ Logs are in the folder `jarvis where` prints.
 ## Testing
 
 ```bash
-pytest tests -q        # 202 tests, no API key or network needed
+pytest tests -q        # 219 tests, no API key or network needed
 ```
 
 The permission tests are the ones that matter — they're the safety net for
