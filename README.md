@@ -239,6 +239,61 @@ jarvis config autonomy.daily_spend_cap_usd 5
 
 ---
 
+## Realtime voice — the good one
+
+This is the mode to use. Your voice goes straight to a speech-to-speech model,
+so there is no transcribe-then-think-then-speak chain to sit through.
+
+```bash
+pip install "livekit-agents[google]" livekit-api
+jarvis keys set LIVEKIT_URL          # free at cloud.livekit.io
+jarvis keys set LIVEKIT_API_KEY
+jarvis keys set LIVEKIT_API_SECRET
+jarvis keys set GEMINI_API_KEY       # free at aistudio.google.com
+
+jarvis realtime
+```
+
+Open the link it prints, press **Start talking**, and talk.
+
+**On your phone**, on the same Wi-Fi:
+
+```bash
+jarvis realtime --lan
+```
+
+It prints a phone-friendly address and a six-digit code.
+
+### Why this is better than the local pipeline
+
+| | Local pipeline | Realtime |
+|---|---|---|
+| Hears itself | Guarded by comparing words | **Cancelled in the audio, properly** |
+| Interrupting | Works, best with headphones | **Native — just talk over it** |
+| Reply speed | A few seconds | **Well under a second** |
+| Windows audio devices | Must be picked correctly | **Irrelevant — sound goes to the browser** |
+| Keyboard clicks | Can trip the detector | **Ignored by the turn model** |
+| Phone | No | **Yes, any phone browser** |
+| Camera | No | **Yes — show it things** |
+
+Everything else comes with it: the same tools, the same permission system, the
+same missions, commands and people. A refused action is refused over the phone
+exactly as it is at the keyboard.
+
+### About that listening socket
+
+A voice assistant with an open port is a way into your machine, so this one is
+deliberately small:
+
+- **Localhost only** unless you pass `--lan`.
+- On the network a **six-digit code is mandatory** — there's no switch to turn
+  it off — and guessing is rate limited to 8 tries per 5 minutes.
+- It hands out a short-lived token scoped to one room. Your API secret is never
+  sent to the page, no shell commands are run, and your firewall is never
+  touched.
+
+---
+
 ## Talking to it
 
 **You don't press anything.** JARVIS starts listening the moment it opens.
@@ -491,6 +546,7 @@ at 3am. `jarvis plugins` lists everything installed and what each one still need
 jarvis setup            first-run wizard
 jarvis                  desktop app (or chat, if PyQt6 isn't installed)
 jarvis chat             terminal conversation        --speak to hear replies
+jarvis realtime         instant voice in the browser  --lan to use your phone
 jarvis voice            hands-free                   --always-on to skip the wake word
 jarvis ask "..."        one command, then exit
 jarvis missions         list saved missions
@@ -588,7 +644,7 @@ Logs are in the folder `jarvis where` prints.
 ## Testing
 
 ```bash
-pytest tests -q        # 264 tests, no API key or network needed
+pytest tests -q        # 291 tests, no API key or network needed
 ```
 
 The permission tests are the ones that matter — they're the safety net for

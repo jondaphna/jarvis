@@ -64,6 +64,11 @@ KEY_SPECS: tuple[KeySpec, ...] = (
     KeySpec("DEEPGRAM_API_KEY", "Deepgram (optional faster speech-to-text)",
             "console.deepgram.com", "$200 credit",
             note="Only needed if local Whisper is too slow on your machine."),
+    KeySpec("LIVEKIT_URL", "LiveKit server URL (realtime voice)", "cloud.livekit.io",
+            "generous free tier",
+            note="Needed for instant browser/phone voice. Looks like wss://x.livekit.cloud"),
+    KeySpec("LIVEKIT_API_KEY", "LiveKit API key", "cloud.livekit.io", "free tier"),
+    KeySpec("LIVEKIT_API_SECRET", "LiveKit API secret", "cloud.livekit.io", "free tier"),
     KeySpec("FISH_API_KEY", "Fish Audio (custom / cloned voice)", "fish.audio",
             "free credit on signup",
             note="Use this for a specific JARVIS voice. Paste the voice model id "
@@ -331,6 +336,16 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "unattended_mode": True,         # missions may run with nobody watching
         "max_mission_minutes": 120,
         "daily_spend_cap_usd": 5.0,      # LLM spend guard; 0 disables the cap
+    },
+
+    # --- realtime voice (LiveKit + Gemini) -------------------------------- #
+    "realtime": {
+        "model": "gemini-2.0-flash-live-001",
+        "voice": "Charon",          # Gemini voice name
+        "temperature": 0.8,
+        "vision": True,             # let it see your camera when you share it
+        "greeting": "Hey - I'm here. What are we doing?",
+        "url": "",                  # or store LIVEKIT_URL in the vault
     },
 
     # --- missions / runtime ---------------------------------------------- #

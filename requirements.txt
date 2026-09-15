@@ -29,6 +29,12 @@ pyautogui>=0.9.54         # keyboard and mouse
 pyperclip>=1.8.2          # clipboard
 psutil>=5.9.0             # machine stats
 
+# --- realtime voice: browser + phone (OPTIONAL, but the best option) -------
+# Instant replies, proper echo cancellation, real interruption, camera vision,
+# and it works on your phone. Install with:
+#   pip install "livekit-agents[google]" livekit-api
+# Needs a free LiveKit Cloud account and a free Gemini key.
+
 # --- voice recognition (OPTIONAL - install separately) ---------------------
 # `pip install resemblyzer` lets JARVIS respond only to your voice. It is NOT
 # listed here on purpose: it pulls in PyTorch, which is a ~2GB download, and

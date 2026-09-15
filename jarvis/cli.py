@@ -987,6 +987,70 @@ def cmd_people(args: argparse.Namespace) -> int:
     return asyncio.run(run())
 
 
+def cmd_realtime(args: argparse.Namespace) -> int:
+    """Instant voice through your browser or phone."""
+    from . import realtime
+    from .realtime import server as rt_server
+    from .realtime.tokens import TokenError, credentials
+
+    problem = realtime.why_unavailable()
+    if problem:
+        print(red(f"\n{problem}\n"))
+        return 1
+
+    config = Config()
+    if config.vault.needs_passphrase:
+        config.vault.unlock(_prompt_passphrase("Vault passphrase: "))
+
+    try:
+        credentials(config)
+    except TokenError as exc:
+        print(red(f"\n{exc}\n"))
+        return 1
+
+    if not (config.key("GEMINI_API_KEY") or config.key("GOOGLE_API_KEY")):
+        print(red("\nRealtime voice needs a Gemini key - free at aistudio.google.com."))
+        print(red("  jarvis keys set GEMINI_API_KEY\n"))
+        return 1
+
+    if args.agent_only:
+        from .realtime.agent import run
+        print(BANNER)
+        print(dim("  Agent worker running. Ctrl-C to stop.\n"))
+        return run()
+
+    web, pin = rt_server.serve(config, port=args.port, lan=args.lan)
+    print(BANNER)
+    print(bold("  Realtime voice is up.\n"))
+
+    urls = (rt_server.local_addresses(args.port) if args.lan
+            else [f"http://localhost:{args.port}"])
+    print("  Open this on this computer:")
+    print(f"    {cyan(urls[0])}")
+    if args.lan and len(urls) > 1:
+        print("\n  Or on your phone, on the same Wi-Fi:")
+        for url in urls[1:]:
+            print(f"    {cyan(url)}")
+    if pin:
+        print(f"\n  Access code: {bold(pin)}")
+        print(dim("  Required because the page is reachable from your network."))
+        print(dim("  It changes every time you start this."))
+    else:
+        print(dim("\n  Local only. Add --lan to reach it from your phone."))
+
+    print(dim("\n  Then press Start talking, and just speak. Interrupt whenever"))
+    print(dim("  you like - it stops mid-sentence and listens.\n"))
+    print(dim("  Ctrl-C to stop.\n"))
+
+    try:
+        from .realtime.agent import run
+        return run()
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        web.shutdown()
+
+
 def cmd_where(args: argparse.Namespace) -> int:
     print(f"""
   {bold('Config')}      {paths.ROOT}
@@ -1022,7 +1086,9 @@ def build_parser() -> argparse.ArgumentParser:
   jarvis setup                     first-run wizard
   jarvis                           open the desktop app (or chat if PyQt6 is missing)
   jarvis chat                      talk to it in the terminal
-  jarvis voice                     talk to it out loud
+  jarvis realtime                  instant voice in your browser (best)
+  jarvis realtime --lan            ...and on your phone
+  jarvis voice                     talk to it out loud (local pipeline)
   jarvis ask "tidy my downloads"   one-shot command
   jarvis missions                  what's scheduled
   jarvis run morning_brief         run a mission now
@@ -1147,6 +1213,15 @@ def build_parser() -> argparse.ArgumentParser:
                         choices=["owner", "trusted", "guest", "blocked"])
     people.add_argument("--samples", type=int)
     people.set_defaults(func=cmd_people)
+
+    realtime_cmd = sub.add_parser(
+        "realtime", help="instant voice in your browser or phone (recommended)")
+    realtime_cmd.add_argument("--lan", action="store_true",
+                              help="also reach it from your phone on the same Wi-Fi")
+    realtime_cmd.add_argument("--port", type=int, default=8787)
+    realtime_cmd.add_argument("--agent-only", action="store_true",
+                              help="run just the agent worker, no web page")
+    realtime_cmd.set_defaults(func=cmd_realtime)
 
     where = sub.add_parser("where", help="print where JARVIS keeps its files")
     where.set_defaults(func=cmd_where)
