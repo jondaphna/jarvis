@@ -990,6 +990,7 @@ def cmd_people(args: argparse.Namespace) -> int:
 def cmd_realtime(args: argparse.Namespace) -> int:
     """Instant voice through your browser or phone."""
     from . import realtime
+    from .realtime import local as rt_local
     from .realtime import server as rt_server
     from .realtime.tokens import TokenError, credentials
 
@@ -1002,10 +1003,24 @@ def cmd_realtime(args: argparse.Namespace) -> int:
     if config.vault.needs_passphrase:
         config.vault.unlock(_prompt_passphrase("Vault passphrase: "))
 
+    # --local: use a LiveKit server running on this machine. No account, no
+    # sign-up, nothing leaves the network except the Gemini call itself.
+    if args.local:
+        if not rt_local.is_running():
+            print(red("\n  No LiveKit server found on this machine.\n"))
+            print(dim(rt_local.install_help()))
+            print()
+            return 1
+        rt_local.apply(config)
+        print(dim("\n  Using the LiveKit server on this machine."))
+
     try:
         credentials(config)
     except TokenError as exc:
-        print(red(f"\n{exc}\n"))
+        print(red(f"\n{exc}"))
+        print(dim("\n  Or skip the account entirely - run a server here:"))
+        print(dim("    python -m jarvis realtime --local"))
+        print(dim("  (it will tell you how to install it)\n"))
         return 1
 
     if not (config.key("GEMINI_API_KEY") or config.key("GOOGLE_API_KEY")):
@@ -1019,11 +1034,11 @@ def cmd_realtime(args: argparse.Namespace) -> int:
         print(dim("  Agent worker running. Ctrl-C to stop.\n"))
         return run()
 
-    web, pin = rt_server.serve(config, port=args.port, lan=args.lan)
+    web, pin, scheme = rt_server.serve(config, port=args.port, lan=args.lan)
     print(BANNER)
     print(bold("  Realtime voice is up.\n"))
 
-    urls = (rt_server.local_addresses(args.port) if args.lan
+    urls = (rt_server.local_addresses(args.port, scheme) if args.lan
             else [f"http://localhost:{args.port}"])
     print("  Open this on this computer:")
     print(f"    {cyan(urls[0])}")
@@ -1031,6 +1046,12 @@ def cmd_realtime(args: argparse.Namespace) -> int:
         print("\n  Or on your phone, on the same Wi-Fi:")
         for url in urls[1:]:
             print(f"    {cyan(url)}")
+        if scheme == "https":
+            print(dim("\n  Your phone will warn that the certificate isn't"))
+            print(dim("  trusted - that's expected, it's signed by this"))
+            print(dim("  computer. Tap Advanced, then continue. Browsers only"))
+            print(dim("  allow microphone access over HTTPS, so this is the"))
+            print(dim("  step that makes the phone work at all."))
     if pin:
         print(f"\n  Access code: {bold(pin)}")
         print(dim("  Required because the page is reachable from your network."))
@@ -1087,6 +1108,7 @@ def build_parser() -> argparse.ArgumentParser:
   jarvis                           open the desktop app (or chat if PyQt6 is missing)
   jarvis chat                      talk to it in the terminal
   jarvis realtime                  instant voice in your browser (best)
+  jarvis realtime --local          ...with no LiveKit account at all
   jarvis realtime --lan            ...and on your phone
   jarvis voice                     talk to it out loud (local pipeline)
   jarvis ask "tidy my downloads"   one-shot command
@@ -1219,6 +1241,9 @@ def build_parser() -> argparse.ArgumentParser:
     realtime_cmd.add_argument("--lan", action="store_true",
                               help="also reach it from your phone on the same Wi-Fi")
     realtime_cmd.add_argument("--port", type=int, default=8787)
+    realtime_cmd.add_argument("--local", action="store_true",
+                              help="use a LiveKit server on this machine "
+                                   "(no account needed)")
     realtime_cmd.add_argument("--agent-only", action="store_true",
                               help="run just the agent worker, no web page")
     realtime_cmd.set_defaults(func=cmd_realtime)

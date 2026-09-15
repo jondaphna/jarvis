@@ -125,23 +125,24 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(404, b"not found", "text/plain")
 
 
-def local_addresses(port: int) -> list[str]:
+def local_addresses(port: int, scheme: str = "http") -> list[str]:
     """Addresses this machine can be reached on, for the phone."""
-    urls = [f"http://localhost:{port}"]
+    urls = [f"{scheme}://localhost:{port}"]
     try:
         hostname = socket.gethostname()
         for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
             address = info[4][0]
-            if not address.startswith("127.") and f"http://{address}:{port}" not in urls:
-                urls.append(f"http://{address}:{port}")
+            url = f"{scheme}://{address}:{port}"
+            if not address.startswith("127.") and url not in urls:
+                urls.append(url)
     except OSError:
         pass
     return urls
 
 
 def serve(config, port: int = 8787, lan: bool = False,
-          room: str = "jarvis") -> tuple[ThreadingHTTPServer, str | None]:
-    """Start the web server. Returns (server, pin)."""
+          room: str = "jarvis") -> tuple[ThreadingHTTPServer, str | None, str]:
+    """Start the web server. Returns (server, pin, scheme)."""
     # A PIN is mandatory the moment this is reachable from anywhere but here.
     pin = new_pin() if lan else None
 
@@ -151,9 +152,29 @@ def serve(config, port: int = 8787, lan: bool = False,
 
     host = "0.0.0.0" if lan else "127.0.0.1"
     server = ThreadingHTTPServer((host, port), _Handler)
+    scheme = "http"
+
+    # A phone on http://192.168.x.x is not a "secure context", so the browser
+    # refuses microphone access outright - the page loads and the mic button
+    # just never works. HTTPS is what makes the phone usable at all.
+    if lan:
+        try:
+            import ssl
+
+            from .certs import ensure
+
+            cert_path, key_path = ensure()
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(str(cert_path), str(key_path))
+            server.socket = context.wrap_socket(server.socket, server_side=True)
+            scheme = "https"
+        except Exception as exc:
+            log.warning("couldn't enable HTTPS (%s) - the phone microphone "
+                        "will be blocked by the browser", exc)
+
     thread = threading.Thread(target=server.serve_forever, daemon=True,
                               name="jarvis-realtime-web")
     thread.start()
-    log.info("realtime web server on %s:%d (pin=%s)", host, port,
+    log.info("realtime web server on %s://%s:%d (pin=%s)", scheme, host, port,
              "yes" if pin else "no")
-    return server, pin
+    return server, pin, scheme

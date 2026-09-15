@@ -246,23 +246,48 @@ so there is no transcribe-then-think-then-speak chain to sit through.
 
 ```bash
 pip install "livekit-agents[google]" livekit-api
-jarvis keys set LIVEKIT_URL          # free at cloud.livekit.io
+jarvis keys set GEMINI_API_KEY       # free at aistudio.google.com
+```
+
+Then pick how LiveKit runs — **either works, and both are free**:
+
+**On your own machine** (no account, no sign-up):
+
+```bash
+winget install LiveKit.LiveKitServer
+livekit-server --dev                 # leave this running in its own window
+
+jarvis realtime --local
+```
+
+**Or LiveKit Cloud** (nothing to install, works away from home):
+
+```bash
+jarvis keys set LIVEKIT_URL          # from cloud.livekit.io
 jarvis keys set LIVEKIT_API_KEY
 jarvis keys set LIVEKIT_API_SECRET
-jarvis keys set GEMINI_API_KEY       # free at aistudio.google.com
 
 jarvis realtime
 ```
+
+Local mode is the better default: everything but the Gemini call stays on your
+machine, and there is no account to sign up for.
 
 Open the link it prints, press **Start talking**, and talk.
 
 **On your phone**, on the same Wi-Fi:
 
 ```bash
-jarvis realtime --lan
+jarvis realtime --local --lan
 ```
 
-It prints a phone-friendly address and a six-digit code.
+It prints an address and a six-digit code.
+
+Your phone will warn that the certificate isn't trusted. **That's expected** —
+it's signed by your own computer. Tap *Advanced* → *Continue*. This matters more
+than it looks: browsers only allow microphone access over HTTPS, so without it
+the page would load and the microphone would silently never work. JARVIS
+generates the certificate for you the first time.
 
 ### Why this is better than the local pipeline
 
@@ -644,7 +669,7 @@ Logs are in the folder `jarvis where` prints.
 ## Testing
 
 ```bash
-pytest tests -q        # 291 tests, no API key or network needed
+pytest tests -q        # 298 tests, no API key or network needed
 ```
 
 The permission tests are the ones that matter — they're the safety net for

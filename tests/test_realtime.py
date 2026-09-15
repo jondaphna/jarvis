@@ -135,14 +135,19 @@ class TestWebServerSecurity:
         config.vault.set("LIVEKIT_URL", "wss://test.livekit.cloud")
         config.vault.set("LIVEKIT_API_KEY", "devkey")
         config.vault.set("LIVEKIT_API_SECRET", "devsecret0123456789abcdef")
-        server, pin = rt_server.serve(config, port=0, lan=lan)
+        server, pin, scheme = rt_server.serve(config, port=0, lan=lan)
         port = server.server_address[1]
-        return server, pin, port
+        return server, pin, port, scheme
 
-    def _get(self, port: int, path: str):
+    def _get(self, port: int, path: str, scheme: str = "http"):
+        import ssl
+
+        # The certificate is self-signed by design, so verification is off here
+        # for the same reason a phone has to tap through the warning.
+        context = ssl._create_unverified_context() if scheme == "https" else None
         try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}",
-                                        timeout=5) as response:
+            with urllib.request.urlopen(f"{scheme}://127.0.0.1:{port}{path}",
+                                        timeout=5, context=context) as response:
                 return response.status, json.loads(response.read() or b"{}")
         except urllib.error.HTTPError as exc:
             body = exc.read()
@@ -152,7 +157,7 @@ class TestWebServerSecurity:
                 return exc.code, {}
 
     def test_local_only_by_default(self, settings):
-        server, pin, port = self._serve(settings, lan=False)
+        server, pin, port, scheme = self._serve(settings, lan=False)
         try:
             assert server.server_address[0] == "127.0.0.1"
             assert pin is None
@@ -160,56 +165,144 @@ class TestWebServerSecurity:
             server.shutdown()
 
     def test_network_exposure_forces_a_pin(self, settings):
-        server, pin, port = self._serve(settings, lan=True)
+        server, pin, port, scheme = self._serve(settings, lan=True)
         try:
             assert server.server_address[0] == "0.0.0.0"
             assert pin and len(pin) == 6
         finally:
             server.shutdown()
 
-    def test_no_token_without_the_pin(self, settings):
-        server, pin, port = self._serve(settings, lan=True)
+    def test_network_exposure_uses_https(self, settings):
+        """Phones refuse the microphone on plain http, so LAN mode must be TLS."""
+        server, pin, port, scheme = self._serve(settings, lan=True)
         try:
-            status, body = self._get(port, "/token")
+            assert scheme == "https"
+            status, body = self._get(port, f"/token?pin={pin}", scheme)
+            assert status == 200 and body["token"]
+        finally:
+            server.shutdown()
+
+    def test_no_token_without_the_pin(self, settings):
+        server, pin, port, scheme = self._serve(settings, lan=True)
+        try:
+            status, body = self._get(port, "/token", scheme)
             assert status == 403
             assert "token" not in body
         finally:
             server.shutdown()
 
     def test_the_right_pin_works(self, settings):
-        server, pin, port = self._serve(settings, lan=True)
+        server, pin, port, scheme = self._serve(settings, lan=True)
         try:
-            status, body = self._get(port, f"/token?pin={pin}")
+            status, body = self._get(port, f"/token?pin={pin}", scheme)
             assert status == 200 and body["token"]
         finally:
             server.shutdown()
 
     def test_guessing_gets_locked_out(self, settings):
-        server, pin, port = self._serve(settings, lan=True)
+        server, pin, port, scheme = self._serve(settings, lan=True)
         try:
             for _ in range(9):
-                self._get(port, "/token?pin=000000")
+                self._get(port, "/token?pin=000000", scheme)
             # Even the correct code is refused once it has been hammered.
-            status, body = self._get(port, f"/token?pin={pin}")
+            status, body = self._get(port, f"/token?pin={pin}", scheme)
             assert status == 403
             assert "attempts" in body.get("error", "")
         finally:
             server.shutdown()
 
     def test_the_api_secret_is_never_served(self, settings):
-        server, pin, port = self._serve(settings, lan=False)
+        server, pin, port, scheme = self._serve(settings, lan=False)
         try:
-            _, body = self._get(port, "/token")
+            _, body = self._get(port, "/token", scheme)
             assert "devsecret0123456789abcdef" not in json.dumps(body)
-            _, config_body = self._get(port, "/config")
+            _, config_body = self._get(port, "/config", scheme)
             assert "devsecret0123456789abcdef" not in json.dumps(config_body)
         finally:
             server.shutdown()
 
     def test_unknown_paths_are_refused(self, settings):
-        server, pin, port = self._serve(settings, lan=False)
+        server, pin, port, scheme = self._serve(settings, lan=False)
         try:
-            status, _ = self._get(port, "/../../etc/passwd")
+            status, _ = self._get(port, "/../../etc/passwd", scheme)
             assert status in (403, 404)
         finally:
             server.shutdown()
+
+
+class TestLocalServerMode:
+    """Running LiveKit on this machine, with no account at all."""
+
+    def test_it_detects_that_nothing_is_running(self):
+        from jarvis.realtime import local
+
+        # Nothing is listening on this port in the test environment.
+        assert local.is_running(port=7999, timeout=0.2) is False
+
+    def test_it_detects_a_listening_server(self):
+        import socket
+        import threading
+
+        from jarvis.realtime import local
+
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        threading.Thread(target=lambda: listener.accept(), daemon=True).start()
+        try:
+            assert local.is_running(port=port, timeout=1.0) is True
+        finally:
+            listener.close()
+
+    def test_dev_credentials_are_applied_without_being_stored(self, settings,
+                                                              monkeypatch):
+        """A publicly known secret must not end up in the encrypted vault."""
+        from jarvis.config import Config
+        from jarvis.realtime import local, tokens
+
+        for name in ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"):
+            monkeypatch.delenv(name, raising=False)
+
+        config = Config()
+        local.apply(config)
+
+        url, key, secret = tokens.credentials(config)
+        assert url == local.DEV_URL and key == local.DEV_KEY
+        # Present for this run, but never written to the vault.
+        assert "LIVEKIT_API_SECRET" not in config.vault._load()
+
+    def test_the_install_help_names_both_routes(self):
+        from jarvis.realtime import local
+
+        help_text = local.install_help()
+        assert "winget" in help_text
+        assert "github.com/livekit/livekit/releases" in help_text
+        assert "--dev" in help_text
+
+
+class TestPhoneCertificate:
+    def test_a_certificate_is_generated_and_reused(self, tmp_path):
+        from jarvis.realtime import certs
+
+        cert, key = certs.ensure(tmp_path)
+        assert cert.exists() and key.exists()
+        again, _ = certs.ensure(tmp_path)
+        assert again == cert
+        assert cert.read_bytes().startswith(b"-----BEGIN CERTIFICATE-----")
+
+    def test_it_covers_the_addresses_a_phone_would_use(self, tmp_path):
+        """A LAN address missing from the certificate = the phone can't connect."""
+        import socket
+
+        from cryptography import x509
+
+        from jarvis.realtime import certs
+
+        cert_path, _ = certs.ensure(tmp_path)
+        cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
+        san = cert.extensions.get_extension_for_class(
+            x509.SubjectAlternativeName).value
+        covered = {str(entry.value) for entry in san}
+        assert "localhost" in covered
+        assert socket.gethostname() in covered
