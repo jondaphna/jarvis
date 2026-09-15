@@ -340,7 +340,7 @@ JARVIS can learn your voice and ignore everybody else — useful if the TV is on
 or people are talking nearby.
 
 ```bash
-pip install resemblyzer
+pip install resemblyzer      # ~2GB (pulls in PyTorch) - only if you want this
 jarvis voiceprint enrol      # say three sentences
 jarvis voiceprint test       # check it recognises you
 ```

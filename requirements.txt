@@ -29,9 +29,11 @@ pyautogui>=0.9.54         # keyboard and mouse
 pyperclip>=1.8.2          # clipboard
 psutil>=5.9.0             # machine stats
 
-# --- voice recognition (optional) ------------------------------------------
-# Lets JARVIS respond only to your voice. Computed and stored locally.
-resemblyzer>=0.1.4
+# --- voice recognition (OPTIONAL - install separately) ---------------------
+# `pip install resemblyzer` lets JARVIS respond only to your voice. It is NOT
+# listed here on purpose: it pulls in PyTorch, which is a ~2GB download, and
+# nothing else needs it. JARVIS says so plainly if you try to use the feature
+# without it, so install it only if you want it.
 
 # --- optional extras -------------------------------------------------------
 PyJWT>=2.8.0              # only needed for the Kling video plugin
