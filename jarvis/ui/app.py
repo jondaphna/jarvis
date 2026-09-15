@@ -43,6 +43,11 @@ class MainWindow(QMainWindow):
         self.refresh_timer.timeout.connect(self._periodic_refresh)
         self.refresh_timer.start(15000)
 
+        # Make the orb breathe with what the microphone is actually hearing.
+        self.level_timer = QTimer(self)
+        self.level_timer.timeout.connect(self._sync_mic_level)
+        self.level_timer.start(60)
+
     # ------------------------------------------------------------------ #
     # Layout
     # ------------------------------------------------------------------ #
@@ -109,7 +114,7 @@ class MainWindow(QMainWindow):
         self.orb.setMinimumSize(190, 190)
         left.addWidget(self.orb, 1)
 
-        self.voice_button = QPushButton("Hold a conversation")
+        self.voice_button = QPushButton("Start listening")
         self.voice_button.setObjectName("primary")
         self.voice_button.clicked.connect(self._toggle_voice)
         left.addWidget(self.voice_button)
@@ -244,8 +249,8 @@ class MainWindow(QMainWindow):
             self.voice_active = False
             if self._voice_future is not None:
                 self._voice_future.cancel()
-            self.voice_button.setText("Hold a conversation")
-            self.voice_hint.setText("")
+            self.voice_button.setText("Start listening")
+            self.voice_hint.setText("Paused")
             self.orb.set_state(IDLE)
             return
 
@@ -255,14 +260,14 @@ class MainWindow(QMainWindow):
             return
 
         self.voice_active = True
-        self.voice_button.setText("Stop listening")
+        self.voice_button.setText("Pause listening")
         word = self.app.settings.get("voice.wake_word", "jarvis")
-        self.voice_hint.setText(f"Say “{word}” to get my attention")
+        self.voice_hint.setText(f"Listening — just say “{word}”")
         self.orb.set_state(LISTENING)
 
         def done(_result: Any, error: Exception | None) -> None:
             self.voice_active = False
-            self.voice_button.setText("Hold a conversation")
+            self.voice_button.setText("Start listening")
             self.orb.set_state(IDLE)
             if error is not None:
                 self._say_system(f"Voice stopped: {error}")
@@ -414,6 +419,14 @@ class MainWindow(QMainWindow):
         self.status_label.setText(
             "  listening" if self.voice_active else "")
 
+    def _sync_mic_level(self) -> None:
+        if not self.voice_active:
+            return
+        level = self.app.mic_level
+        self.orb.set_level(level)
+        if getattr(self, "floating", None) is not None and self.floating.isVisible():
+            self.floating.set_level(level)
+
     def _periodic_refresh(self) -> None:
         self._refresh_badges()
         self.activity_panel.refresh_stats()
@@ -495,6 +508,11 @@ def run_ui() -> int:
 
     window = MainWindow(assistant, runner)
     window.show()
+
+    # Always-on by default: you shouldn't have to press anything to talk.
+    if assistant.settings.get("voice.always_listening", True) \
+            and assistant.listener.available():
+        QTimer.singleShot(400, window._toggle_voice)
 
     if not assistant.brain.ready():
         QMessageBox.information(

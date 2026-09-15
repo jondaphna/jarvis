@@ -7,6 +7,8 @@ thin layers over this; nothing important lives in either of them.
 from __future__ import annotations
 
 import asyncio
+import random
+import time
 from typing import Any, Callable
 
 from . import events
@@ -20,11 +22,43 @@ from .memory import Memory
 from .permissions import PermissionBroker
 from .scheduler import MissionScheduler
 from .tools import ToolRegistry
-from .voice_in import VoiceListener
+from .voice_in import ContinuousListener, VoiceListener, contains_wake_word
 from .voice_out import SpeechEngine
 from .. import paths
 from ..config import Config
 from ..plugins import PluginManager
+
+
+#: Said when you call JARVIS by name without giving it anything to do. Varied on
+#: purpose - hearing the identical sentence every time is what makes an
+#: assistant feel like a machine.
+WAKE_REPLIES = [
+    "Yeah? What's up?",
+    "I'm here - what do you need?",
+    "Go ahead.",
+    "Yes? How can I help?",
+    "Listening.",
+    "What can I do for you?",
+    "Right here. What's up?",
+]
+
+GOODBYES = [
+    "Alright, I'll be here.",
+    "Catch you later.",
+    "Standing by.",
+    "No problem - shout if you need me.",
+]
+
+_GOODBYE_WORDS = {
+    "stop", "goodbye", "bye", "that's all", "thats all", "shut down", "shutdown",
+    "go to sleep", "sleep", "nevermind", "never mind", "thanks that's all",
+    "stop listening", "quiet",
+}
+
+
+def _is_goodbye(text: str) -> bool:
+    cleaned = (text or "").lower().strip().rstrip(".!?,")
+    return cleaned in _GOODBYE_WORDS
 
 
 class Assistant:
@@ -48,6 +82,7 @@ class Assistant:
         self.listener = VoiceListener(self.config)
 
         self.conversation_id: int | None = None
+        self._listener_handle: Any = None
         self._started = False
 
     # ------------------------------------------------------------------ #
@@ -196,45 +231,85 @@ class Assistant:
 
     async def voice_loop(self, wake_word: bool = True,
                          should_stop: Callable[[], bool] | None = None) -> None:
-        """Keep listening and answering until told to stop."""
-        if not self.listener.available():
-            raise RuntimeError(self.listener.why_unavailable())
+        """Listen continuously and answer out loud until told to stop.
 
-        self.listener.transcriber.warm_up()
+        Three things make this feel like talking to someone rather than
+        operating a device:
+
+        * The microphone never closes, so the wake word can't land in a gap.
+        * Saying just "Jarvis" gets an immediate friendly answer, then the next
+          thing you say is the command.
+        * After any reply there's a short window where you can carry on talking
+          without saying the wake word again.
+        """
+        listener = ContinuousListener(self.config)
         word = self.settings.get("voice.wake_word", "jarvis")
-        log.info("voice loop started (%s)",
-                 f"say '{word}'" if wake_word else "always listening")
+        follow_up_seconds = float(self.settings.get("voice.follow_up_seconds", 12))
 
-        while not (should_stop and should_stop()):
-            try:
-                if wake_word:
-                    utterance = await self.listener.listen_for_wake_word(word)
-                    if utterance is None:
-                        continue
-                    if not utterance.text.strip():
-                        await self.say("Yes?")
-                        utterance = await self.listener.listen()
-                        if not utterance:
-                            continue
-                else:
-                    utterance = await self.listener.listen()
-                    if not utterance:
-                        continue
+        try:
+            await listener.start()
+        except Exception as exc:
+            bus.publish(events.ERROR, f"Couldn't open the microphone: {exc}")
+            raise
 
-                text = utterance.text.strip()
-                if text.lower().rstrip(".!?") in ("stop", "goodbye", "that's all",
-                                                  "shut down", "go to sleep"):
-                    await self.say("Standing by.")
+        self._listener_handle = listener
+        log.info("listening continuously (%s)",
+                 f"say '{word}'" if wake_word else "no wake word needed")
+        bus.publish(events.INFO,
+                    f"Listening - say “{word}”" if wake_word else "Listening")
+
+        open_until = 0.0        # while now < this, no wake word is needed
+
+        try:
+            async for utterance in listener.utterances():
+                if should_stop is not None and should_stop():
                     return
 
-                await self.ask(text, tier=TIER_VOICE, speak=True)
+                text = (utterance.text or "").strip()
+                if not text:
+                    continue
 
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                log.warning("voice loop error: %s", exc, exc_info=True)
-                bus.publish(events.ERROR, f"Voice error: {exc}")
-                await asyncio.sleep(1.0)
+                # Don't let JARVIS answer its own voice coming back through the
+                # speakers - that loops forever.
+                if self.speech.speaking:
+                    continue
+
+                now = time.monotonic()
+                command = text
+
+                if wake_word and now >= open_until:
+                    heard, remainder = contains_wake_word(text, word)
+                    if not heard:
+                        continue
+                    if not remainder:
+                        # Just the name: answer straight away, then listen.
+                        await self.say(random.choice(WAKE_REPLIES))
+                        open_until = time.monotonic() + follow_up_seconds
+                        continue
+                    command = remainder
+
+                if _is_goodbye(command):
+                    await self.say(random.choice(GOODBYES))
+                    return
+
+                await self.ask(command, tier=TIER_VOICE, speak=True)
+                # Carry on the conversation without repeating the wake word.
+                open_until = time.monotonic() + follow_up_seconds
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("voice loop error: %s", exc, exc_info=True)
+            bus.publish(events.ERROR, f"Voice stopped: {exc}")
+        finally:
+            self._listener_handle = None
+            await listener.stop()
+
+    @property
+    def mic_level(self) -> float:
+        """Live input level, for the orb to pulse with."""
+        listener = getattr(self, "_listener_handle", None)
+        return listener.level if listener is not None else 0.0
 
     # ------------------------------------------------------------------ #
     # Missions

@@ -51,7 +51,7 @@ class FloatingOrb(QWidget):
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.setToolTip("JARVIS — click to talk, double-click to open, drag to move")
 
-        self.orb = Orb(self)
+        self.orb = Orb(self, transparent=True)
         self.orb.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
         self._caption_timer = QTimer(self)

@@ -21,8 +21,15 @@ SPEAKING = "speaking"
 
 
 class Orb(QWidget):
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None,
+                 transparent: bool = False) -> None:
         super().__init__(parent)
+        #: Transparent mode paints a circular disc on a see-through background,
+        #: for the floating orb. Filling the whole rect (the windowed default)
+        #: would make that a dark square sitting on the desktop.
+        self._transparent = transparent
+        if transparent:
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         # Kept small so the floating orb can be 92px; the main window
         # gives it room via its layout instead.
         self.setMinimumSize(64, 64)
@@ -61,10 +68,29 @@ class Orb(QWidget):
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt naming
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor(BG))
 
         centre = QPointF(self.width() / 2, self.height() / 2)
         base = min(self.width(), self.height()) * 0.28
+
+        if self._transparent:
+            # A soft dark disc so the orb reads on a light desktop too, and so
+            # there's something solid to click.
+            backdrop = QColor(BG)
+            backdrop.setAlpha(205)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(backdrop)
+            radius = min(self.width(), self.height()) / 2 - 1
+            painter.drawEllipse(centre, radius, radius)
+
+            rim = QColor(ACCENT)
+            rim.setAlpha(70)
+            pen = QPen(rim)
+            pen.setWidthF(1.4)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(centre, radius, radius)
+        else:
+            painter.fillRect(self.rect(), QColor(BG))
         breathe = math.sin(self._phase) * (base * 0.06)
         radius = base + breathe + (self._level * base * 0.3)
 

@@ -15,10 +15,12 @@ from __future__ import annotations
 import asyncio
 import queue
 import tempfile
+import threading
 import wave
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, AsyncIterator, Callable
 
 from . import events
 from .audio import list_devices, resolve_device
@@ -27,6 +29,8 @@ from .events import bus, log
 SAMPLE_RATE = 16000
 FRAME_MS = 30
 FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000
+#: Shorter than this isn't a word - it's a cough, a click or a door.
+MIN_SPEECH_MS = 250
 
 
 class MicrophoneError(RuntimeError):
@@ -369,3 +373,236 @@ def _module_available(name: str) -> bool:
         return importlib.util.find_spec(name) is not None
     except (ImportError, ValueError):
         return False
+
+
+# --------------------------------------------------------------------------- #
+# Always-on listening
+# --------------------------------------------------------------------------- #
+
+class ContinuousListener:
+    """Listens without stopping, so the wake word is never missed.
+
+    The old design recorded a burst, closed the microphone, transcribed, then
+    re-opened it - and anything said during transcription was simply lost. Here
+    capture and transcription are separate: a background thread holds the
+    microphone open the whole time and cuts speech into utterances, while the
+    async side transcribes them a beat later. You can talk over JARVIS thinking.
+
+    The audio source is injectable, which is what lets the segmentation logic be
+    tested without a microphone.
+    """
+
+    def __init__(self, config, source: Any = None) -> None:
+        self.config = config
+        self.settings = config.settings
+        self.transcriber = Transcriber(config)
+        self._source = source                 # None = the real microphone
+        self._pcm: queue.Queue = queue.Queue(maxsize=32)
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._level = 0.0
+        self._error: str = ""
+
+    # ------------------------------------------------------------------ #
+
+    @property
+    def level(self) -> float:
+        """Live input level 0-1, for the orb."""
+        return self._level
+
+    @property
+    def error(self) -> str:
+        return self._error
+
+    def running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    async def start(self) -> None:
+        """Open the microphone and begin segmenting speech."""
+        if self.running():
+            return
+        self._stop.clear()
+        self._error = ""
+        # Loading Whisper reads ~150MB from disk (and downloads it the first
+        # time). Doing that on the event loop froze the whole app.
+        await asyncio.to_thread(self.transcriber.warm_up)
+        self._thread = threading.Thread(target=self._capture, name="jarvis-mic",
+                                        daemon=True)
+        self._thread.start()
+
+    async def stop(self) -> None:
+        self._stop.set()
+        thread = self._thread
+        self._thread = None
+        if thread is not None:
+            await asyncio.to_thread(thread.join, 2.0)
+        self._level = 0.0
+
+    async def utterances(self) -> AsyncIterator[Utterance]:
+        """Yield each transcribed utterance as it becomes available."""
+        while not self._stop.is_set():
+            try:
+                pcm = await asyncio.to_thread(self._pcm.get, True, 0.4)
+            except queue.Empty:
+                if not self.running() and self._error:
+                    raise MicrophoneError(self._error)
+                continue
+            if pcm is None:
+                return
+            try:
+                utterance = await self.transcriber.transcribe(pcm)
+            except TranscriptionError as exc:
+                log.warning("transcription failed: %s", exc)
+                continue
+            if utterance:
+                yield utterance
+
+    # ------------------------------------------------------------------ #
+    # Capture thread
+    # ------------------------------------------------------------------ #
+
+    def _frames(self):
+        """Yield raw PCM frames, from the microphone or an injected source."""
+        if self._source is not None:
+            yield from self._source
+            return
+
+        import sounddevice as sd
+
+        device = resolve_device(self.settings.get("voice.input_device"),
+                               want_input=True)
+        inbox: queue.Queue = queue.Queue()
+
+        def callback(indata, _frames, _time, status) -> None:
+            if status:
+                log.debug("audio input status: %s", status)
+            inbox.put(bytes(indata))
+
+        with sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=FRAME_SAMPLES,
+                               dtype="int16", channels=1, callback=callback,
+                               device=device):
+            while not self._stop.is_set():
+                try:
+                    yield inbox.get(timeout=0.4)
+                except queue.Empty:
+                    continue
+
+    def _capture(self) -> None:
+        try:
+            import numpy as np
+        except ImportError:
+            self._error = "Voice input needs numpy. Run: pip install numpy"
+            log.warning(self._error)
+            return
+
+        silence_ms = int(self.settings.get("voice.vad_silence_ms", 700))
+        silence_frames = max(2, silence_ms // FRAME_MS)
+        max_frames = int(30_000 / FRAME_MS)
+        # A short pre-roll keeps the first syllable of "Jarvis" from being cut.
+        preroll_frames = max(3, 300 // FRAME_MS)
+
+        preroll: deque[bytes] = deque(maxlen=preroll_frames)
+        collected: list[bytes] = []
+        speaking = False
+        quiet_run = 0
+        voiced_frames = 0
+        noise_floor = 0.0
+        calibrated = 0
+
+        try:
+            for frame in self._frames():
+                if self._stop.is_set():
+                    break
+
+                samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
+                energy = float(np.sqrt(np.mean(samples ** 2))) if samples.size else 0.0
+                self._level = min(1.0, energy * 8)
+
+                # Track the room's noise level, but only while nobody is talking.
+                if not speaking:
+                    if calibrated < 25:
+                        noise_floor = energy if calibrated == 0 else \
+                            noise_floor * 0.85 + energy * 0.15
+                        calibrated += 1
+                    else:
+                        noise_floor = noise_floor * 0.995 + energy * 0.005
+
+                speech_on = max(noise_floor * 3.0, 0.015)
+                speech_off = max(noise_floor * 1.8, 0.008)
+
+                if not speaking:
+                    preroll.append(frame)
+                    if energy > speech_on and calibrated >= 5:
+                        speaking = True
+                        quiet_run = 0
+                        voiced_frames = 1
+                        collected = list(preroll)
+                        preroll.clear()
+                    continue
+
+                collected.append(frame)
+                if energy < speech_off:
+                    quiet_run += 1
+                else:
+                    quiet_run = 0
+                    voiced_frames += 1
+
+                if quiet_run >= silence_frames or len(collected) >= max_frames:
+                    # Measure the *voiced* part only. Counting the pre-roll and
+                    # the trailing silence would let a door slam through as a word.
+                    if voiced_frames * FRAME_MS >= MIN_SPEECH_MS:
+                        self._emit(b"".join(collected))
+                    speaking = False
+                    quiet_run = 0
+                    voiced_frames = 0
+                    collected = []
+
+            if speaking and voiced_frames * FRAME_MS >= MIN_SPEECH_MS:
+                self._emit(b"".join(collected))
+
+        except Exception as exc:
+            self._error = str(exc)
+            log.warning("microphone capture stopped: %s", exc, exc_info=True)
+        finally:
+            self._level = 0.0
+
+    def _emit(self, pcm: bytes) -> None:
+        try:
+            self._pcm.put_nowait(pcm)
+        except queue.Full:
+            # Transcription is behind; drop the oldest rather than block capture.
+            try:
+                self._pcm.get_nowait()
+                self._pcm.put_nowait(pcm)
+            except queue.Empty:
+                pass
+
+
+def contains_wake_word(text: str, wake_word: str) -> tuple[bool, str]:
+    """Did they say the wake word, and what did they say after it?
+
+    Speech-to-text mangles names, so "Jarvis" also arrives as "Jarvis,",
+    "Service", "Travis" or "Charvis". Accepting near-misses matters more than
+    being strict: the cost of a false positive is one unnecessary "yes?", and
+    the cost of a false negative is the whole thing feeling broken.
+    """
+    import re as _re
+
+    lowered = (text or "").lower()
+    word = (wake_word or "jarvis").lower().strip()
+    if not lowered.strip():
+        return False, ""
+
+    variants = [word]
+    if word == "jarvis":
+        variants += ["jarvis", "jarvus", "jervis", "jarves", "charvis", "travis",
+                     "service", "servis", "javis", "jarv", "yarvis", "harvis"]
+
+    for variant in variants:
+        match = _re.search(r"\b" + _re.escape(variant) + r"\b", lowered)
+        if match is None:
+            continue
+        remainder = text[match.end():].lstrip(" ,.!?-–—:;").strip()
+        return True, remainder
+
+    return False, ""

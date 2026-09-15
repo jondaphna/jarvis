@@ -239,6 +239,39 @@ jarvis config autonomy.daily_spend_cap_usd 5
 
 ---
 
+## Talking to it
+
+**You don't press anything.** JARVIS starts listening the moment it opens.
+
+Just say the name:
+
+> **"Jarvis"** → *"Yeah? What's up?"* → then say what you want
+
+or say it in one go:
+
+> **"Jarvis, open Chrome and search for flights to Rome"**
+
+After it answers you have **12 seconds to keep talking without saying the name
+again**, so a back-and-forth feels like a conversation rather than a series of
+commands. Say *"stop"*, *"never mind"* or *"goodbye"* and it goes quiet.
+
+The microphone stays open the whole time — including while JARVIS is thinking or
+talking — so the wake word can never land in a gap. It ignores its own voice
+coming back through the speakers, and a door slamming isn't a word.
+
+Not hearing you? It's almost always the wrong microphone:
+
+```bash
+jarvis devices --set-input "Lenovo"
+jarvis listen
+```
+
+Prefer to type? The text box always works and costs the same. Prefer a button?
+"Pause listening" stops it; `jarvis config voice.always_listening false` makes
+it opt-in.
+
+---
+
 ## The floating orb
 
 Close the main window and JARVIS doesn't go away — a small circle stays on top of
@@ -445,7 +478,7 @@ Logs are in the folder `jarvis where` prints.
 ## Testing
 
 ```bash
-pytest tests -q        # 173 tests, no API key or network needed
+pytest tests -q        # 202 tests, no API key or network needed
 ```
 
 The permission tests are the ones that matter — they're the safety net for

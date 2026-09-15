@@ -258,9 +258,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "assistant_name": "JARVIS",
     "user_name": "",
     "personality": (
-        "Dry, precise, quietly amused. Brief by default - one or two sentences "
-        "unless asked for detail. Address the user as 'sir' only sparingly. "
-        "Never pad answers with filler or restate the question."
+        "Warm, relaxed and genuinely friendly - like a sharp mate who happens to "
+        "run your computer. Talk the way a person actually talks: contractions, "
+        "easy rhythm, a bit of humour when it fits. Interested in what they're "
+        "doing, not just processing requests. Never stiff, never corporate, never "
+        "formal for the sake of it."
     ),
     "timezone": "",                      # blank = system timezone
 
@@ -302,6 +304,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "input_device": None,
         "output_device": None,
         "wake_word": "jarvis",
+        # Start listening the moment JARVIS opens - no button press needed.
+        "always_listening": True,
+        # After a reply, keep listening this long without needing the wake word.
+        "follow_up_seconds": 12,
         "hotkey": "ctrl+space",
         "vad_silence_ms": 700,
         "enabled": True,
@@ -350,6 +356,17 @@ class Settings:
         self._lock = threading.RLock()
         self._data = _deep_merge(DEFAULT_SETTINGS, data or {})
 
+    #: Old default values that should be replaced rather than preserved. A
+    #: saved settings file always wins over a default, so shipping a better
+    #: default would otherwise never reach anyone who has already run setup.
+    _STALE_DEFAULTS = {
+        "personality": [
+            "Dry, precise, quietly amused. Brief by default - one or two sentences "
+            "unless asked for detail. Address the user as 'sir' only sparingly. "
+            "Never pad answers with filler or restate the question."
+        ],
+    }
+
     @classmethod
     def load(cls) -> "Settings":
         if paths.CONFIG_FILE.exists():
@@ -359,6 +376,11 @@ class Settings:
                 raw = {}
         else:
             raw = {}
+
+        for key, stale in cls._STALE_DEFAULTS.items():
+            if str(raw.get(key, "")).strip() in {s.strip() for s in stale}:
+                raw.pop(key, None)
+
         return cls(raw)
 
     def save(self) -> None:
