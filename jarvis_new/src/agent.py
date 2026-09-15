@@ -13,7 +13,9 @@ from livekit.agents import (
 from livekit.agents.beta.tools import EndCallTool
 from livekit.plugins import ai_coustics, google
 
+from brain_memory import JarvisMemory
 from browser import BrowserManager
+from personalise import extra_instructions, load_rules, load_settings
 from prompts import AGENT_INSTRUCTIONS
 from tools import BrowserTools
 
@@ -21,9 +23,15 @@ load_dotenv(".env.local")
 
 
 class Assistant(Agent):
-    def __init__(self, browser: BrowserManager | None = None) -> None:
+    def __init__(self, browser: BrowserManager | None = None,
+                 memory: JarvisMemory | None = None) -> None:
         self.browser = browser or BrowserManager(headless=True)
         self.browser_tools = BrowserTools(self.browser)
+        # Memory, your custom commands and the wake phrase. All optional: if
+        # any of it can't be loaded the call still happens, just less personal.
+        self.memory = memory or JarvisMemory()
+        self._settings = load_settings()
+        self._rules = load_rules(self._settings)
         self._end_call_tool = EndCallTool(
             extra_description=(
                 "Only end the call after the user clearly says they are finished, "
@@ -51,9 +59,11 @@ class Assistant(Agent):
             # 3. Add `from livekit.plugins import openai` to the top of this file
             # 4. Replace the llm argument with:
             #     llm=openai.realtime.RealtimeModel(voice="marin")
-            instructions=AGENT_INSTRUCTIONS,
+            instructions=AGENT_INSTRUCTIONS + "\n\n" + extra_instructions(
+                self.memory, self._settings, self._rules),
             tools=[
                 *self.browser_tools.tools,
+                *self.memory.tools,
                 *self._end_call_tool.tools,
             ],
         )
@@ -72,6 +82,10 @@ async def my_agent(ctx: JobContext):
 
     browser = BrowserManager(headless=False)
     ctx.add_shutdown_callback(browser.close)
+
+    # One conversation row per call, so every turn is searchable later.
+    memory = JarvisMemory()
+    memory.start_conversation("voice")
 
     # Gemini realtime handles the voice input and output for this session.
     session = AgentSession(
@@ -104,9 +118,11 @@ async def my_agent(ctx: JobContext):
         # expressive=True, 
     )
 
+    _record_conversation(session, memory)
+
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
-        agent=Assistant(browser),
+        agent=Assistant(browser, memory),
         room=ctx.room,
         room_options=room_io.RoomOptions(
             video_input=True,
@@ -120,6 +136,33 @@ async def my_agent(ctx: JobContext):
     
     # Join the room and connect to the user
     await ctx.connect()
+
+
+def _record_conversation(session: AgentSession, memory: JarvisMemory) -> None:
+    """Write every turn to the shared memory database as it happens.
+
+    Both handlers are wrapped: an exception raised inside a session event
+    handler takes the session down with it, and nothing here is worth losing a
+    conversation over.
+    """
+
+    @session.on("user_input_transcribed")
+    def _on_user_speech(event: object) -> None:
+        try:
+            if not getattr(event, "is_final", True):
+                return
+            memory.log("user", getattr(event, "transcript", "") or "")
+        except Exception:
+            pass
+
+    @session.on("conversation_item_added")
+    def _on_item(event: object) -> None:
+        try:
+            item = getattr(event, "item", None)
+            if getattr(item, "role", "") == "assistant":
+                memory.log("assistant", getattr(item, "text_content", "") or "")
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

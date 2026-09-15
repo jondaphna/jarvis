@@ -338,6 +338,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "daily_spend_cap_usd": 5.0,      # LLM spend guard; 0 disables the cap
     },
 
+    # --- the wake phrase and what it answers ------------------------------ #
+    # Said on its own, this gets an instant greeting and nothing else. Both
+    # halves are editable from the interface.
+    "wake": {
+        "phrase": "hey jarvis",
+        "reply": "Hey - what's up? How can I help?",
+    },
+
     # --- realtime voice (LiveKit + Gemini) -------------------------------- #
     "realtime": {
         # Must be a model the Gemini Live API still serves, on an API key
