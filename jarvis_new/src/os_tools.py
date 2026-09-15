@@ -20,7 +20,6 @@ playing - Spotify, YouTube, a game - instead of only one app.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -28,23 +27,9 @@ from pathlib import Path
 from livekit.agents import RunContext, function_tool
 from livekit.agents.llm import ToolError
 
-WINDOWS = sys.platform == "win32"
+import launcher
 
-#: Spoken names mapped to what actually launches. Everything else falls through
-#: to the shell's own resolver, which handles anything on PATH or registered.
-APPS = {
-    "chrome": "chrome", "google chrome": "chrome",
-    "edge": "msedge", "firefox": "firefox",
-    "spotify": "spotify", "discord": "discord", "steam": "steam",
-    "notepad": "notepad", "calculator": "calc", "calc": "calc",
-    "paint": "mspaint", "explorer": "explorer", "file explorer": "explorer",
-    "files": "explorer", "task manager": "taskmgr",
-    "word": "winword", "excel": "excel", "powerpoint": "powerpnt",
-    "outlook": "outlook", "teams": "teams",
-    "vs code": "code", "vscode": "code", "visual studio code": "code",
-    "terminal": "wt", "command prompt": "cmd", "cmd": "cmd",
-    "settings": "ms-settings:", "camera": "microsoft.windows.camera:",
-}
+WINDOWS = sys.platform == "win32"
 
 #: Virtual key codes for the media keys every Windows keyboard reports.
 _KEYS = {
@@ -76,6 +61,7 @@ class OSTools:
     @property
     def tools(self) -> list:
         return [
+            self.open_website,
             self.open_app,
             self.open_folder,
             self.set_volume,
@@ -91,35 +77,67 @@ class OSTools:
     # ------------------------------------------------------------------ #
 
     @function_tool()
-    async def open_app(self, context: RunContext, name: str) -> str:
-        """Open an application on this computer.
+    async def open_website(self, context: RunContext, name: str) -> str:
+        """Open a website in the user's own browser, where they are signed in.
 
-        Use this for programs - Spotify, Chrome, Word, Discord. For a website,
-        use open_url instead; this is for things installed on the machine.
-        Do it immediately when asked; don't announce it first.
+        This is the right tool whenever they say "open" and name a site -
+        YouTube, Netflix, Gmail, their bank. It opens in their real Chrome with
+        their real logins, which is what they mean by "my Netflix".
+
+        Do NOT use open_url for this. That opens a separate automation browser
+        that is signed into nothing, which the user cannot see properly and
+        which is only for when *you* need to read or click a page yourself.
+
+        Call it immediately, without announcing it first.
+
+        Args:
+            name: A site name like "youtube" or "my netflix", or a full URL.
+        """
+        url = launcher.site_url(name)
+        if url is None:
+            raise ToolError(
+                f"{name!r} doesn't look like a website. If it's a program on "
+                f"the computer, use open_app instead.")
+        try:
+            launcher.open_in_browser(url)
+        except Exception as exc:
+            raise ToolError(f"Couldn't open {name}: {exc}") from exc
+        return f"Opened {url}."
+
+    @function_tool()
+    async def open_app(self, context: RunContext, name: str) -> str:
+        """Open a program installed on this computer.
+
+        Spotify, Word, Discord, Task Manager. If they name a *website*, use
+        open_website instead.
+
+        Call it immediately, without announcing it first.
 
         Args:
             name: What they called it, like "spotify" or "task manager".
         """
-        wanted = (name or "").strip().lower()
+        wanted = (name or "").strip()
         if not wanted:
             raise ToolError("Which application?")
 
-        target = APPS.get(wanted, wanted)
+        if not WINDOWS:
+            raise ToolError("Opening applications only works on Windows.")
+
+        found = launcher.resolve_app(wanted)
+        if found is None:
+            # Some things are only a website - Netflix, for one. Rather than
+            # fail, do the thing they plainly wanted.
+            url = launcher.site_url(wanted)
+            if url:
+                launcher.open_in_browser(url)
+                return f"{name} isn't installed here, so I opened it in the browser."
+            raise ToolError(
+                f"I can't find {name} on this computer. Tell me the exact name "
+                f"it has in the Start menu and I'll use that.")
+
+        kind, target = found
         try:
-            if WINDOWS:
-                # `start` resolves PATH entries, registered app names and
-                # ms-settings: style URIs, which covers far more than
-                # searching for an .exe ourselves would.
-                subprocess.Popen(["cmd", "/c", "start", "", target], shell=False)
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", "-a", target])
-            else:
-                if not shutil.which(target):
-                    raise ToolError(f"I can't find {name} on this machine.")
-                subprocess.Popen([target])
-        except FileNotFoundError as exc:
-            raise ToolError(f"I can't find {name} on this machine.") from exc
+            launcher.launch(kind, target)
         except Exception as exc:
             raise ToolError(f"Couldn't open {name}: {exc}") from exc
         return f"Opened {name}."
@@ -136,6 +154,8 @@ class OSTools:
             "desktop": Path.home() / "Desktop",
             "documents": Path.home() / "Documents",
             "pictures": Path.home() / "Pictures",
+            "music": Path.home() / "Music",
+            "videos": Path.home() / "Videos",
             "home": Path.home(),
         }
         wanted = (path or "").strip()
@@ -144,7 +164,7 @@ class OSTools:
             raise ToolError(f"There's no folder at {target}.")
         try:
             if WINDOWS:
-                os.startfile(str(target))      # noqa: S606 - a folder, by design
+                os.startfile(str(target))
             elif sys.platform == "darwin":
                 subprocess.Popen(["open", str(target)])
             else:

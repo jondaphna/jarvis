@@ -15,6 +15,7 @@ Run it with:  butler-api.bat  (or it starts with the agent)
 
 from __future__ import annotations
 
+import contextlib
 import json
 import secrets
 import sys
@@ -53,10 +54,8 @@ def load_token() -> str:
         pass
     fresh = secrets.token_urlsafe(32)
     path.write_text(fresh, encoding="utf-8")
-    try:                                   # best effort; Windows ignores mode
+    with contextlib.suppress(OSError):     # best effort; Windows ignores mode
         path.chmod(0o600)
-    except OSError:
-        pass
     return fresh
 
 
@@ -335,13 +334,13 @@ class _Handler(BaseHTTPRequestHandler):
 
     # -- routes ------------------------------------------------------------ #
 
-    def do_GET(self) -> None:                  # noqa: N802 - http.server naming
+    def do_GET(self) -> None:
         self._route("GET")
 
-    def do_POST(self) -> None:                 # noqa: N802
+    def do_POST(self) -> None:
         self._route("POST")
 
-    def do_DELETE(self) -> None:               # noqa: N802
+    def do_DELETE(self) -> None:
         self._route("DELETE")
 
     def _route(self, method: str) -> None:

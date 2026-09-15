@@ -10,6 +10,7 @@ part that can fail and prints what it found.
 
 from __future__ import annotations
 
+import contextlib
 import sys
 import urllib.request
 from pathlib import Path
@@ -63,10 +64,11 @@ def check_env() -> None:
     if not web_env.exists():
         fail("frontend/.env.local is missing", "Run butler-setup.bat")
         return
-    web = dict(
-        (line.split("=", 1)[0].strip(), line.split("=", 1)[1].strip())
+    web = {
+        line.split("=", 1)[0].strip(): line.split("=", 1)[1].strip()
         for line in web_env.read_text(encoding="utf-8").splitlines()
-        if "=" in line and not line.strip().startswith("#"))
+        if "=" in line and not line.strip().startswith("#")
+    }
 
     agent_name = ""
     for line in (HERE / "agent.py").read_text(encoding="utf-8").splitlines():
@@ -109,10 +111,8 @@ def check_memory() -> None:
 
     turns = 0
     for conversation in conversations[:5]:
-        try:
+        with contextlib.suppress(Exception):
             turns += len(db.history(conversation["id"], limit=200))
-        except Exception:
-            pass
     print(OK + f"{turns} turn(s) stored in the last few conversations")
 
     if conversations and turns == 0:

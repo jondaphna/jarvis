@@ -338,6 +338,15 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "daily_spend_cap_usd": 5.0,      # LLM spend guard; 0 disables the cap
     },
 
+    # --- your own standing instructions ----------------------------------- #
+    # Free text, written by you, folded into the prompt at the start of every
+    # call. This is where "never do X", "always call me Y", "my business is Z"
+    # live. Editable from the interface.
+    "persona": {
+        "instructions": "",
+        "never": "",
+    },
+
     # --- the wake phrase and what it answers ------------------------------ #
     # Said on its own, this gets an instant greeting and nothing else. Both
     # halves are editable from the interface.

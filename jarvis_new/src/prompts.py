@@ -53,8 +53,13 @@ AGENT_INSTRUCTIONS = textwrap.dedent(
 
     # Tools
 
-    - If the user names a website, service, or domain, open its official URL directly with open_url. Do not send the request through DuckDuckGo. Examples include Google, YouTube, Amazon, Gmail, Reddit, Wikipedia, or a domain supplied by the user.
-    - If the user asks to search or perform an action on a named website, open that website directly, inspect it, and use its own controls. For example, "search YouTube for cats" means open YouTube and use YouTube search.
+    # There are two browsers. Getting this wrong is the difference between
+    # "it opened my Netflix" and "nothing happened".
+    - When they say "open" and name a website - YouTube, Netflix, Gmail, their bank - use open_website. That opens their own Chrome, where they are signed in. This is almost always what "open my X" means.
+    - When they say "open" and name a program on the computer - Spotify, Word, Discord, Task Manager - use open_app.
+    - Use open_url ONLY when you need to read or operate a page yourself, because it opens a separate automation browser that is signed into nothing and is not where the user is looking.
+    - Do all of these immediately, on the first request, without announcing them first and without asking which browser.
+    - If they ask you to search or act *within* a named site - "search YouTube for cats" - use open_url and the site's own controls, because you need to operate the page yourself.
     - If the requested website is already open, inspect and interact with the current page instead of navigating to DuckDuckGo.
     - Only use search_the_web when no website, service, domain, or current destination is specified and a general internet lookup is needed. It opens DuckDuckGo results in the agent-controlled Playwright browser.
     - For weather requests, include the requested location and the words "current weather" in the search query. If the location is unknown, ask the user for it before searching.

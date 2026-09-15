@@ -35,7 +35,10 @@ type Mission = {
 };
 type Authorisation = { id: string; label: string; sentence: string };
 /** Only the parts the panel actually reads are typed; the rest passes through. */
-type Settings = { wake?: { phrase?: string; reply?: string } } & Record<string, unknown>;
+type Settings = {
+  wake?: { phrase?: string; reply?: string };
+  persona?: { instructions?: string; never?: string };
+} & Record<string, unknown>;
 type State = {
   settings: Settings;
   providers: Provider[];
@@ -47,7 +50,7 @@ type State = {
   authorisations: Authorisation[];
 };
 
-const TABS = ['Voice', 'Tasks', 'AI', 'Memory', 'Commands'] as const;
+const TABS = ['Rules', 'Voice', 'Tasks', 'AI', 'Memory', 'Commands'] as const;
 type Tab = (typeof TABS)[number];
 
 async function api(path: string, init?: RequestInit) {
@@ -121,6 +124,93 @@ function Empty({ children }: { children: React.ReactNode }) {
     <p className="text-muted-foreground border-border rounded-lg border border-dashed px-4 py-6 text-center text-sm">
       {children}
     </p>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Rules — what it should and shouldn't do                                     */
+/* -------------------------------------------------------------------------- */
+
+function RulesTab({ state, reload }: { state: State; reload: () => void }) {
+  const persona = state.settings?.persona ?? {};
+  const [instructions, setInstructions] = useState(persona.instructions ?? '');
+  const [never, setNever] = useState(persona.never ?? '');
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api('settings', {
+        method: 'POST',
+        body: JSON.stringify({
+          'persona.instructions': instructions,
+          'persona.never': never,
+        }),
+      });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+      reload();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-5">
+      <p className="text-muted-foreground text-sm">
+        Written in your words, and read at the start of every conversation. This is where you tell
+        it about you, how to talk to you, and what it may do without asking.
+      </p>
+
+      <Field
+        label="Standing instructions"
+        hint="Anything it should always know or always do. One thing per line."
+      >
+        <textarea
+          className={`${inputClass} min-h-36`}
+          value={instructions}
+          onChange={(e) => setInstructions(e.target.value)}
+          placeholder={
+            'My business is video production.\n' +
+            'Keep answers short unless I ask for detail.\n' +
+            'You can open apps and websites without asking.\n' +
+            'Always check my calendar before suggesting a time.'
+          }
+        />
+      </Field>
+
+      <Field
+        label="Never do these"
+        hint="Absolute limits. It will refuse rather than look for a way around them."
+      >
+        <textarea
+          className={`${inputClass} min-h-28`}
+          value={never}
+          onChange={(e) => setNever(e.target.value)}
+          placeholder={
+            'Never post anything publicly without asking me first.\n' +
+            'Never spend money.\n' +
+            'Never delete files.\n' +
+            'Never send email on my behalf.'
+          }
+        />
+      </Field>
+
+      <div className="flex items-center gap-3">
+        <Btn tone="primary" onClick={save} disabled={saving}>
+          {saving ? 'Saving…' : 'Save'}
+        </Btn>
+        {saved && (
+          <span className="text-xs text-emerald-500">Saved — restart the agent to apply.</span>
+        )}
+      </div>
+
+      <p className="text-muted-foreground border-border border-t pt-4 text-xs">
+        These apply to conversations. A scheduled task carries its own separate permissions, set on
+        the task itself under Tasks.
+      </p>
+    </div>
   );
 }
 
@@ -205,6 +295,9 @@ function MissionEditor({
     mission?.steps?.length ? mission.steps : [{ plugin: 'web_search', params: {} }]
   );
   const [allowed, setAllowed] = useState<string[]>(mission?.authorizations ?? []);
+  const [provider, setProvider] = useState<string>(
+    (mission?.steps?.find((x) => x.plugin === 'llm')?.params?.provider as string) ?? ''
+  );
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -232,7 +325,13 @@ function MissionEditor({
           schedule,
           enabled: true,
           authorizations: allowed,
-          steps: steps.map((s) => ({ ...s, params: s.params ?? {} })),
+          // The chosen AI is attached to every thinking step, which is where
+          // the model choice actually matters.
+          steps: steps.map((s) => ({
+            ...s,
+            params:
+              s.plugin === 'llm' && provider ? { ...(s.params ?? {}), provider } : (s.params ?? {}),
+          })),
         }),
       });
       onDone();
@@ -324,6 +423,31 @@ function MissionEditor({
             Add a step
           </Btn>
         </div>
+      </Field>
+
+      <Field
+        label="Which AI should think for it?"
+        hint="Only matters for thinking steps. Leave on default unless you want a specific one."
+      >
+        <select
+          className={inputClass}
+          value={provider}
+          onChange={(e) => setProvider(e.target.value)}
+        >
+          <option value="">Default</option>
+          {state.providers
+            .filter((p) => p.configured && p.name.endsWith('_API_KEY'))
+            .map((p) => (
+              <option key={p.name} value={p.name.replace('_API_KEY', '').toLowerCase()}>
+                {p.label}
+              </option>
+            ))}
+        </select>
+        {!state.providers.some((p) => p.configured && p.name.endsWith('_API_KEY')) && (
+          <span className="text-muted-foreground text-xs">
+            No AI keys stored yet — add one under the AI tab and it will appear here.
+          </span>
+        )}
       </Field>
 
       <div className="border-border space-y-2 rounded-md border border-dashed p-3">
@@ -694,7 +818,7 @@ function CommandsTab({ state, reload }: { state: State; reload: () => void }) {
 
 export function ControlPanel() {
   const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState<Tab>('Voice');
+  const [tab, setTab] = useState<Tab>('Rules');
   const [state, setState] = useState<State | null>(null);
   const [error, setError] = useState('');
 
@@ -788,13 +912,20 @@ export function ControlPanel() {
 
             <div className="flex-1 overflow-y-auto px-5 py-5">
               {error && (
-                <div className="border-destructive/30 bg-destructive/10 text-destructive mb-4 rounded-lg border px-4 py-3 text-sm">
-                  {error}
+                <div className="border-destructive/30 bg-destructive/10 text-destructive mb-4 space-y-2 rounded-lg border px-4 py-3 text-sm">
+                  <p className="font-medium">Can&apos;t reach Jarvis&apos;s settings service.</p>
+                  <p className="opacity-90">{error}</p>
+                  <p className="opacity-90">
+                    It starts with the agent. Run <strong>butler-agent.bat</strong>, or{' '}
+                    <strong>butler-doctor.bat</strong> to see what&apos;s wrong.
+                  </p>
+                  <Btn onClick={load}>Try again</Btn>
                 </div>
               )}
               {!state && !error && <p className="text-muted-foreground text-sm">Loading…</p>}
               {state && (
                 <>
+                  {tab === 'Rules' && <RulesTab state={state} reload={load} />}
                   {tab === 'Voice' && <VoiceTab state={state} reload={load} />}
                   {tab === 'Tasks' && <TasksTab state={state} reload={load} />}
                   {tab === 'AI' && <AITab state={state} reload={load} />}

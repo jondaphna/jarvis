@@ -90,6 +90,13 @@ class Orb(QWidget):
         self._probe.start(4000)
         self._check_online()
 
+        # Starting the orb starts Jarvis. The point of the orb is to be the
+        # only thing you have to launch: by the time the circle is on screen,
+        # the microphone should already be live, so "hey Jarvis" works without
+        # clicking anything first.
+        if not self._online:
+            QTimer.singleShot(400, self.open_jarvis)
+
     # ------------------------------------------------------------------ #
     # Where it sits
     # ------------------------------------------------------------------ #

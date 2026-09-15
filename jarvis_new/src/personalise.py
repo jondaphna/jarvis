@@ -90,6 +90,27 @@ def extra_instructions(memory: Any = None, settings: Any = None,
 
     blocks.append(wake_block(settings))
 
+    # Whatever the user wrote in the interface. Placed early and stated
+    # plainly, because these are their instructions about their own
+    # assistant and should outrank the template's defaults.
+    if settings is not None:
+        try:
+            standing = str(settings.get("persona.instructions", "") or "").strip()
+            forbidden = str(settings.get("persona.never", "") or "").strip()
+        except Exception:
+            standing = forbidden = ""
+        if standing:
+            blocks.append(
+                "# Standing instructions from the user\n"
+                "These come directly from them and take priority over your "
+                "general style guidance.\n\n" + standing)
+        if forbidden:
+            blocks.append(
+                "# Things you must never do\n"
+                "Absolute. If a request would require one of these, say you "
+                "can't and stop - don't look for a way around it.\n\n"
+                + forbidden)
+
     if rules is not None:
         try:
             standing = rules.instruction_block()

@@ -10,10 +10,6 @@ if not exist ".env.local" (
   exit /b 1
 )
 
-REM The control service powers the Settings panel in the web page. It runs
-REM in its own minimised window so this one stays readable.
-start "Jarvis control" /min cmd /c "uv run python src/control_api.py"
-
 echo.
 echo   Starting Jarvis...
 echo   Wait for "registered worker" before opening the web page.

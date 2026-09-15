@@ -125,7 +125,7 @@ async def my_agent(ctx: JobContext):
         # emits inline delivery tags (emotion, pacing, non-verbal sounds) that the TTS renders and
         # the transcript never shows. Requires a TTS model that supports markup, such as the Fish
         # Audio model above.
-        # expressive=True, 
+        # expressive=True,
     )
 
     _record_conversation(session, memory)
@@ -143,7 +143,7 @@ async def my_agent(ctx: JobContext):
             ),
         ),
     )
-    
+
     # Join the room and connect to the user
     await ctx.connect()
 

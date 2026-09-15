@@ -14,11 +14,13 @@ Double-click these. That's the whole interface.
 | **`butler-talk.bat`** | Talk in a terminal. No browser. The fastest way to check it works. |
 | **`butler-agent.bat`** | The brain. Start this **first**. Wait for `registered worker`. |
 | **`butler-web.bat`** | The web app, at **http://localhost:3000**. Start this **second**. |
-| **`butler-orb.bat`** | The floating circle that sits on top of everything. |
+| **`butler-orb.bat`** | **The only one you need.** The floating circle — starts everything. |
 
-**The normal way to use it:** run `butler-orb.bat` once. From then on, click the
-orb — it starts the agent and the web app for you, waits for them, then opens
-Jarvis in Chrome already connected, so you can just talk.
+**The normal way to use it:** run `butler-orb.bat`. That's it.
+
+Starting the orb starts everything — the agent, the web app, and a Chrome window
+already connected and listening. By the time the circle appears you can just say
+**"hey Jarvis"** and it answers. No clicking, no opening the site.
 
 The orb goes amber while it's starting and cyan when it's ready. The first time
 on a new machine, Chrome asks for the microphone — allow it once and every later
@@ -58,6 +60,18 @@ you'll watch it browse.
 
 The **gear button**, top right of the web app. Five tabs.
 
+### Rules
+**The important one.** Written in your words, read at the start of every
+conversation.
+
+- **Standing instructions** — anything it should always know or do. *"My business
+  is video production." "Keep answers short." "You can open apps without asking."*
+- **Never do these** — absolute limits. It refuses rather than looking for a way
+  around them. *"Never post publicly without asking." "Never spend money."*
+
+These apply to conversations. Scheduled tasks carry their own separate
+permissions, set on the task itself.
+
 ### Voice
 The wake phrase and exactly what it says back. Changes apply next time the agent
 starts — a call in progress keeps the instructions it began with.
@@ -81,6 +95,9 @@ isn't ticked, the action is refused and logged, not negotiated.
 
 Schedules are presets (*every night at 2am*, *weekdays at 7am*) or cron if you
 want the control. Leave it empty and the task only runs when you ask.
+
+You can also pick **which AI** does the thinking for that task — any provider you
+have a key for shows up in the dropdown.
 
 ### AI
 Every model this build can use, and whether a key is stored. Paste a key to switch
@@ -114,8 +131,18 @@ Say these exact words, get exactly those words back. No thinking, no variation.
 - Searches everything ever said in past conversations
 - You can edit or delete any of it
 
+### Opening things
+- **Websites in your own Chrome** — "open YouTube", "open my Netflix", "open
+  Gmail". Your browser, your logins.
+- **Apps** — "open Spotify", "open Word", "open task manager". Found through your
+  Start Menu, so anything you have installed works by the name you'd actually say.
+- If something isn't installed but exists as a website, it opens that instead.
+
+There are two browsers, and it matters: your Chrome is where you're signed in,
+and a separate automation browser is what Jarvis reads and clicks pages in. "Open
+X" always means yours.
+
 ### Your computer
-- **Open apps** — "open Spotify", "open Word", "open task manager"
 - **Open folders** — "open my downloads"
 - **Volume** — up, down, mute
 - **Music** — play, pause, next, previous. Works with whatever is playing,

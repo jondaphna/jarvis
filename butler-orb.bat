@@ -1,16 +1,42 @@
 @echo off
 REM The little circle that sits on top of everything.
 REM
-REM Click it to open Jarvis. Drag it anywhere. Right-click for more.
-REM It stays put when you close the browser, and it never shows up in
-REM the taskbar or in alt-tab.
+REM Starting it also starts Jarvis: the agent, the web app, and a Chrome
+REM window already connected and listening. So once the orb is up you can
+REM just say "hey Jarvis" - no clicking required.
 REM
-REM Closing this window does NOT stop the orb. Right-click the orb and
-REM choose "Hide the orb" to stop it.
+REM This window stays open while the orb runs. You can minimise it.
+REM Closing it, or right-clicking the orb and choosing "Hide the orb",
+REM stops the orb.
 setlocal
 cd /d "%~dp0"
 
-REM --with PyQt6 fetches the window toolkit on first run without touching
-REM the agent's own dependency list.
-start "" /min cmd /c "uv run --with PyQt6 python desktop_orb.py"
+where uv >nul 2>nul
+if errorlevel 1 (
+  echo.
+  echo   uv isn't installed, or this window can't see it yet.
+  echo   Run butler-setup.bat first. If you just installed it,
+  echo   close this window, open a new one, and try again.
+  echo.
+  pause
+  exit /b 1
+)
+
+echo.
+echo   Starting the orb...
+echo   The first run downloads the window toolkit, which takes a minute.
+echo.
+
+REM --no-project is load-bearing. Without it, uv sees the pyproject.toml in
+REM this folder and rebuilds the whole jarvis package before running anything
+REM - slow at best, and when it fails the orb simply never appears.
+uv run --no-project --with PyQt6 python desktop_orb.py
+
+if errorlevel 1 (
+  echo.
+  echo   The orb stopped with an error. The reason is above this line.
+  echo.
+  pause
+  exit /b 1
+)
 exit /b 0
