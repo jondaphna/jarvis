@@ -150,21 +150,80 @@ def check_thinking() -> None:
         return
 
     if thinker.available():
-        print(OK + "Claude key stored - hard questions get real thought")
+        print(OK + f"thinking with {thinker.describe()}")
     else:
-        print(WARN + "no Claude key, so it answers everything off the cuff")
+        print(WARN + "no brain is reachable, so it answers everything off the cuff")
         problems.append(
-            "Add a Claude key for proper reasoning: jarvis keys set "
-            "ANTHROPIC_API_KEY (or the AI tab in settings)")
+            "Add your Google key so thinking works - it's free: jarvis keys "
+            "set GEMINI_API_KEY (or the AI tab in settings)")
 
     try:
         from jarvis.config import Settings
 
         settings = Settings.load()
-        print(OK + f"model: {settings.get('thinking.model', thinker.DEFAULT_MODEL)}"
-                   f" at {settings.get('thinking.effort', thinker.DEFAULT_EFFORT)} effort")
+        chosen = str(settings.get("thinking.model", thinker.DEFAULT_MODEL))
+        allowed = thinker.paid_allowed(settings)
     except Exception:
-        pass
+        return
+
+    print(OK + f"setting: {chosen}"
+               f" at {settings.get('thinking.effort', thinker.DEFAULT_EFFORT)} effort")
+
+    if not allowed:
+        print(OK + "paid AI is off - nothing here can spend money")
+        if thinker.is_paid(chosen):
+            print(WARN + f"{chosen} costs money and paid AI is off, so a free "
+                         "brain answers instead")
+            problems.append(
+                f"Either switch paid AI on in the AI tab, or pick a free "
+                f"model - {chosen} is currently being ignored")
+    else:
+        print(WARN + "paid AI is ON - hard questions may be billed")
+        if thinker.is_paid(chosen) and not thinker._api_key():
+            fail("paid AI is on but no Claude key is stored",
+                 "Add a Claude key in the AI tab, or switch paid AI back off")
+
+
+def check_learning() -> None:
+    """What it has been taught, and whether it will reach the next call."""
+    print("\nWhat you have taught it")
+    sys.path.insert(0, str(HERE))
+    try:
+        from learning import Lessons
+    except Exception as exc:
+        fail(f"can't load the learning module: {exc}", "Tell me this error")
+        return
+
+    lessons = Lessons()
+    if not lessons.available:
+        fail("the lesson store isn't reachable", "Tell me this error")
+        return
+
+    try:
+        rows = lessons.db.lessons(limit=200)
+    except Exception as exc:
+        fail(f"can't read the lessons: {exc}", "Tell me this error")
+        return
+
+    if not rows:
+        print(WARN + "nothing taught yet - say \"when I say X, do Y\" and it "
+                     "will remember")
+        return
+
+    taught = [r for r in rows if r["source"] in ("taught", "corrected")]
+    watched = [r for r in rows if r["source"] == "watched"]
+    print(OK + f"{len(taught)} taught by you, {len(watched)} picked up by watching")
+
+    block = lessons.block()
+    if block.strip():
+        print(OK + f"{block.count(chr(10) + '- ') + 1} of them go into the "
+                   "next call's instructions")
+    else:
+        fail("lessons exist but none reach the prompt",
+             "Tell me this - it means teaching it does nothing")
+
+    for row in rows[:6]:
+        print(f"      \"{row['said'] or row['trigger']}\" -> {str(row['steps'])[:58]}")
 
 
 def check_long_conversations() -> None:
@@ -286,7 +345,7 @@ def check_services() -> None:
 def main() -> int:
     print("\n  Jarvis - checking everything\n" + "  " + "-" * 44)
     for check in (check_env, check_thinking, check_long_conversations,
-                  check_memory, check_browser, check_services,
+                  check_memory, check_learning, check_browser, check_services,
                   check_settings_routes):
         try:
             check()

@@ -19,7 +19,6 @@ playing - Spotify, YouTube, a game - instead of only one app.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -31,11 +30,80 @@ import launcher
 
 WINDOWS = sys.platform == "win32"
 
+#: Windows API constants. Uppercase because that is what they are called in
+#: every piece of Windows documentation you will check this against.
+WM_CLOSE = 0x0010
+SW_MINIMIZE = 6
+SW_RESTORE = 9
+VK_WINDOWS = 0x5B
+VK_D = 0x44
+KEY_UP = 2
+
 #: Virtual key codes for the media keys every Windows keyboard reports.
 _KEYS = {
     "mute": 0xAD, "volume_down": 0xAE, "volume_up": 0xAF,
     "next": 0xB0, "previous": 0xB1, "stop": 0xB2, "play_pause": 0xB3,
 }
+
+
+def _window_action(what: str, name: str) -> bool:
+    """Close, focus or minimise a window. True if one was found.
+
+    Closing sends WM_CLOSE - the same message the X button sends - rather than
+    killing the process, so an unsaved document prompts instead of vanishing.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+
+    matches: list[int] = []
+    wanted = name.lower()
+
+    proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def visit(hwnd, _):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length <= 0:
+            return True
+        buffer = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buffer, length + 1)
+        if not wanted or wanted in buffer.value.lower():
+            matches.append(hwnd)
+        return True
+
+    if name:
+        user32.EnumWindows(proc(visit), 0)
+        if not matches:
+            return False
+        handle = matches[0]
+    else:
+        handle = user32.GetForegroundWindow()
+        if not handle:
+            return False
+
+    if what == "close":
+        user32.PostMessageW(handle, WM_CLOSE, 0, 0)
+    elif what == "minimise":
+        user32.ShowWindow(handle, SW_MINIMIZE)
+    else:
+        user32.ShowWindow(handle, SW_RESTORE)
+        user32.SetForegroundWindow(handle)
+    return True
+
+
+def _show_desktop() -> None:
+    """Win+D. A combination, so the Windows key has to be held down while D is
+    pressed - tapping it on its own just opens the Start menu."""
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.keybd_event(VK_WINDOWS, 0, 0, 0)
+    user32.keybd_event(VK_D, 0, 0, 0)
+    user32.keybd_event(VK_D, 0, KEY_UP, 0)
+    user32.keybd_event(VK_WINDOWS, 0, KEY_UP, 0)
 
 
 def _press(vk: int, times: int = 1) -> None:
@@ -62,7 +130,7 @@ class OSTools:
     def tools(self) -> list:
         return [
             self.open_app,
-            self.open_folder,
+            self.window_action,
             self.set_volume,
             self.control_music,
             self.system_status,
@@ -115,35 +183,46 @@ class OSTools:
         return f"Opened {name}."
 
     @function_tool()
-    async def open_folder(self, context: RunContext, path: str) -> str:
-        """Open a folder in the file manager.
+    async def window_action(self, context: RunContext, action: str,
+                            name: str = "") -> str:
+        """Close, focus or minimise a window on screen.
+
+        Use this when they say close, shut, switch to, bring up, minimise or
+        hide something. With no name it acts on whatever is in front.
+
+        Closing asks the window to close the way clicking its X does, so
+        anything with unsaved work will prompt them rather than lose it.
 
         Args:
-            path: A folder path, or a shortcut like "downloads" or "desktop".
+            action: "close", "focus", "minimise", or "minimise all".
+            name: Part of the window or program name, like "spotify" or
+                "chrome". Leave empty for the window in front.
         """
-        shortcuts = {
-            "downloads": Path.home() / "Downloads",
-            "desktop": Path.home() / "Desktop",
-            "documents": Path.home() / "Documents",
-            "pictures": Path.home() / "Pictures",
-            "music": Path.home() / "Music",
-            "videos": Path.home() / "Videos",
-            "home": Path.home(),
-        }
-        wanted = (path or "").strip()
-        target = shortcuts.get(wanted.lower(), Path(wanted).expanduser())
-        if not target.exists():
-            raise ToolError(f"There's no folder at {target}.")
+        if not WINDOWS:
+            raise ToolError("Managing windows only works on Windows.")
+
+        wanted = (action or "").strip().lower().replace("minimize", "minimise")
+        target = (name or "").strip()
+
+        if wanted in ("minimise all", "minimise everything", "show desktop"):
+            _show_desktop()
+            return "Minimised everything."
+
+        if wanted not in ("close", "focus", "minimise"):
+            raise ToolError("Say close, focus, minimise, or minimise all.")
+
         try:
-            if WINDOWS:
-                os.startfile(str(target))
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", str(target)])
-            else:
-                subprocess.Popen(["xdg-open", str(target)])
+            found = _window_action(wanted, target)
         except Exception as exc:
-            raise ToolError(f"Couldn't open that folder: {exc}") from exc
-        return f"Opened {target}."
+            raise ToolError(f"Couldn't {wanted} that window: {exc}") from exc
+
+        if not found:
+            raise ToolError(
+                f"I can't find a window called {target!r}. Tell me what it says "
+                f"in the title bar.")
+        where = target or "the front window"
+        return {"close": f"Closed {where}.", "focus": f"Switched to {where}.",
+                "minimise": f"Minimised {where}."}[wanted]
 
     # ------------------------------------------------------------------ #
     # Sound

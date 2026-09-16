@@ -109,6 +109,7 @@ def _local_chrome():
     from pathlib import Path
 
     from chrome_finder import find_chrome
+
     from live_browser import LiveBrowser
 
     chrome = find_chrome()

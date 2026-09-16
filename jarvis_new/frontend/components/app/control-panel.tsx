@@ -58,11 +58,32 @@ type State = {
   plugins: Record<string, string>;
   browser_profiles: BrowserProfile[];
   permissions: Permission[];
-  thinking_models: { id: string; label: string }[];
+  thinking_models: ThinkingModel[];
+  costs: Costs;
+  lessons: Lesson[];
   authorisations: Authorisation[];
 };
+type ThinkingModel = { id: string; label: string; free: boolean; detail?: string };
+type Costs = { allow_paid: boolean; using: string; spent_30d_usd: number; note: string };
+type Lesson = {
+  id: number;
+  trigger: string;
+  said: string;
+  steps: string;
+  source: string;
+  uses: number;
+};
 
-const TABS = ['Rules', 'Permissions', 'Voice', 'Tasks', 'AI', 'Memory', 'Commands'] as const;
+const TABS = [
+  'Rules',
+  'Permissions',
+  'Voice',
+  'Tasks',
+  'AI',
+  'Learned',
+  'Memory',
+  'Commands',
+] as const;
 type Tab = (typeof TABS)[number];
 
 async function api(path: string, init?: RequestInit) {
@@ -691,6 +712,7 @@ function AITab({ state, reload }: { state: State; reload: () => void }) {
   const [value, setValue] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const paidOn = Boolean(state.costs?.allow_paid);
 
   const save = async (name: string) => {
     setError('');
@@ -711,8 +733,48 @@ function AITab({ state, reload }: { state: State; reload: () => void }) {
     <div className="space-y-4">
       <p className="text-muted-foreground text-sm">
         Every AI this build can use. Paste a key to switch one on — they&apos;re encrypted in your
-        vault, never in a file you might share.
+        vault, never in a file you might share. Nothing here spends money unless you say so below.
       </p>
+
+      <div className="border-border bg-card/50 space-y-3 rounded-lg border p-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium">Money</p>
+            <p className="text-muted-foreground text-xs">
+              Everything is free out of the box. Turn this on and Jarvis may use a paid model for
+              the hard thinking — nothing else ever costs anything.
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={paidOn}
+            onClick={async () => {
+              await api('settings', {
+                method: 'POST',
+                body: JSON.stringify({ 'thinking.allow_paid': !paidOn }),
+              });
+              reload();
+            }}
+            aria-label="Allow paid AI"
+            className={`mt-0.5 h-6 w-11 shrink-0 rounded-full transition ${
+              paidOn ? 'bg-amber-500' : 'bg-secondary border-border border'
+            }`}
+          >
+            <span
+              className={`block h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                paidOn ? 'translate-x-5' : 'translate-x-0.5'
+              }`}
+            />
+          </button>
+        </div>
+        <p className="text-muted-foreground text-xs">
+          Right now: <span className="text-foreground">{state.costs?.using ?? 'free'}</span>
+          {state.costs
+            ? ` · spent in the last 30 days: $${state.costs.spent_30d_usd.toFixed(2)}`
+            : ''}
+        </p>
+      </div>
 
       <div className="border-border bg-card/50 space-y-2 rounded-lg border p-3">
         <p className="text-sm font-medium">Which AI does the hard thinking?</p>
@@ -722,9 +784,7 @@ function AITab({ state, reload }: { state: State; reload: () => void }) {
         </p>
         <select
           className={inputClass}
-          defaultValue={
-            (state.settings?.thinking as { model?: string } | undefined)?.model ?? 'claude-opus-5'
-          }
+          value={(state.settings?.thinking as { model?: string } | undefined)?.model ?? 'auto'}
           onChange={async (e) => {
             await api('settings', {
               method: 'POST',
@@ -734,13 +794,16 @@ function AITab({ state, reload }: { state: State; reload: () => void }) {
           }}
         >
           {state.thinking_models?.map((m) => (
-            <option key={m.id} value={m.id}>
+            <option key={m.id} value={m.id} disabled={!m.free && !paidOn}>
               {m.label}
+              {!m.free && !paidOn ? ' — turn Money on first' : ''}
             </option>
           ))}
         </select>
         <p className="text-muted-foreground text-xs">
-          Needs a Claude key below. Without one it falls back to answering off the cuff.
+          {paidOn
+            ? 'Paid models are unlocked. A free one is still used if the paid one is unreachable.'
+            : 'Paid models are locked. Choosing one while this is off changes nothing — a free brain answers instead.'}
         </p>
       </div>
 
@@ -801,6 +864,105 @@ function AITab({ state, reload }: { state: State; reload: () => void }) {
             )}
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Learned — things you taught it how to do                                    */
+/* -------------------------------------------------------------------------- */
+
+function LearnedTab({ state, reload }: { state: State; reload: () => void }) {
+  const [trigger, setTrigger] = useState('');
+  const [steps, setSteps] = useState('');
+  const [error, setError] = useState('');
+
+  const teach = async () => {
+    setError('');
+    try {
+      await api('lessons', { method: 'POST', body: JSON.stringify({ trigger, steps }) });
+      setTrigger('');
+      setSteps('');
+      reload();
+    } catch (e) {
+      setError(String(e instanceof Error ? e.message : e));
+    }
+  };
+
+  const forget = async (t: string) => {
+    await api('lessons/forget', { method: 'POST', body: JSON.stringify({ trigger: t }) });
+    reload();
+  };
+
+  const lessons = state.lessons ?? [];
+
+  return (
+    <div className="space-y-4">
+      <p className="text-muted-foreground text-sm">
+        Jarvis gets better at the jobs you give it most. Teach it out loud — &ldquo;when I say put
+        music on, open Spotify and press play&rdquo; — or write one here. Correct it and the old way
+        is replaced, not kept.
+      </p>
+
+      <div className="border-border bg-card/50 space-y-2 rounded-lg border p-3">
+        <p className="text-sm font-medium">Teach it something</p>
+        <Field label="When I say" hint="Your words for the job, short.">
+          <input
+            className={inputClass}
+            value={trigger}
+            onChange={(e) => setTrigger(e.target.value)}
+            placeholder="put music on"
+          />
+        </Field>
+        <Field label="Do this" hint="The actual steps, naming sites and buttons.">
+          <textarea
+            className={`${inputClass} min-h-20`}
+            value={steps}
+            onChange={(e) => setSteps(e.target.value)}
+            placeholder="open_url with site spotify, then click the play button"
+          />
+        </Field>
+        {error && <p className="text-destructive text-xs">{error}</p>}
+        <Btn tone="primary" onClick={teach}>
+          Teach
+        </Btn>
+      </div>
+
+      <div>
+        <p className="mb-2 text-sm font-medium">
+          What it has learned{lessons.length ? ` (${lessons.length})` : ''}
+        </p>
+        {lessons.length === 0 ? (
+          <Empty>Nothing yet. Tell it how you want a job done and it&apos;ll appear here.</Empty>
+        ) : (
+          <div className="space-y-1.5">
+            {lessons.map((l) => (
+              <div
+                key={l.id}
+                className="border-border bg-card/50 flex items-start justify-between gap-3 rounded-md border px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <p className="flex items-center gap-2 text-sm font-medium break-words">
+                    &ldquo;{l.said || l.trigger}&rdquo;
+                    {l.source === 'watched' ? (
+                      <span className="text-muted-foreground bg-secondary rounded-full px-2 py-0.5 text-[10px] font-semibold">
+                        FROM WATCHING
+                      </span>
+                    ) : null}
+                    {l.uses > 0 ? (
+                      <span className="text-muted-foreground text-[10px]">used {l.uses}×</span>
+                    ) : null}
+                  </p>
+                  <p className="text-muted-foreground text-xs break-words">{l.steps}</p>
+                </div>
+                <Btn tone="danger" onClick={() => forget(l.trigger)}>
+                  Forget
+                </Btn>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1044,6 +1206,7 @@ export function SettingsBody({ onClose }: { onClose?: () => void }) {
             {tab === 'Voice' && <VoiceTab state={state} reload={load} />}
             {tab === 'Tasks' && <TasksTab state={state} reload={load} />}
             {tab === 'AI' && <AITab state={state} reload={load} />}
+            {tab === 'Learned' && <LearnedTab state={state} reload={load} />}
             {tab === 'Memory' && <MemoryTab state={state} reload={load} />}
             {tab === 'Commands' && <CommandsTab state={state} reload={load} />}
           </>

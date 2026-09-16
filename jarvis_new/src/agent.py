@@ -16,6 +16,7 @@ from livekit.plugins import ai_coustics, google
 from brain_memory import JarvisMemory
 from browser import BrowserManager
 from control_api import serve_in_background
+from learning import Lessons
 from os_tools import OSTools
 from permissions import filter_tools
 from permissions import summary as permission_summary
@@ -29,12 +30,16 @@ load_dotenv(".env.local")
 
 class Assistant(Agent):
     def __init__(self, browser: BrowserManager | None = None,
-                 memory: JarvisMemory | None = None) -> None:
+                 memory: JarvisMemory | None = None,
+                 lessons: Lessons | None = None) -> None:
         self.browser = browser or BrowserManager(headless=True)
         self.browser_tools = BrowserTools(self.browser)
         # Memory, your custom commands and the wake phrase. All optional: if
         # any of it can't be loaded the call still happens, just less personal.
         self.memory = memory or JarvisMemory()
+        # What you have taught it. Shares the memory handle rather than
+        # opening a second connection to the same SQLite file.
+        self.lessons = lessons or Lessons(self.memory)
         self.os_tools = OSTools()
         # The smart half. The voice stays fast; this is where hard
         # problems go.
@@ -92,6 +97,10 @@ class Assistant(Agent):
             instructions="\n\n".join(part for part in (
                 AGENT_INSTRUCTIONS,
                 extra_instructions(self.memory, self._settings, self._rules),
+                # Their own lessons, ahead of the permission notes: this is
+                # the block that makes a repeated job land first time.
+                self.lessons.block(),
+                self.lessons.guidance(),
                 permission_summary(self._settings),
             ) if part.strip()),
             # Anything switched off is removed here rather than refused later.
@@ -100,6 +109,7 @@ class Assistant(Agent):
             tools=filter_tools([
                 *self.browser_tools.tools,
                 *self.memory.tools,
+                *self.lessons.tools,
                 *self.os_tools.tools,
                 *self.thinker.tools,
                 *self._end_call_tool.tools,
@@ -135,6 +145,11 @@ async def my_agent(ctx: JobContext):
     memory = JarvisMemory()
     memory.start_conversation("voice")
 
+    # Built here rather than inside the Assistant so the session handlers
+    # below and the agent's own tool share one object - the watcher needs to
+    # see what the tool just learned, or it overwrites it.
+    lessons = Lessons(memory)
+
     # Gemini realtime handles the voice input and output for this session.
     session = AgentSession(
         # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
@@ -166,11 +181,11 @@ async def my_agent(ctx: JobContext):
         # expressive=True,
     )
 
-    _record_conversation(session, memory)
+    _record_conversation(session, memory, lessons)
 
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
-        agent=Assistant(browser, memory),
+        agent=Assistant(browser, memory, lessons),
         room=ctx.room,
         room_options=room_io.RoomOptions(
             video_input=True,
@@ -186,10 +201,11 @@ async def my_agent(ctx: JobContext):
     await ctx.connect()
 
 
-def _record_conversation(session: AgentSession, memory: JarvisMemory) -> None:
+def _record_conversation(session: AgentSession, memory: JarvisMemory,
+                         lessons: Lessons | None = None) -> None:
     """Write every turn to the shared memory database as it happens.
 
-    Both handlers are wrapped: an exception raised inside a session event
+    Every handler is wrapped: an exception raised inside a session event
     handler takes the session down with it, and nothing here is worth losing a
     conversation over.
     """
@@ -199,7 +215,32 @@ def _record_conversation(session: AgentSession, memory: JarvisMemory) -> None:
         try:
             if not getattr(event, "is_final", True):
                 return
-            memory.log("user", getattr(event, "transcript", "") or "")
+            said = getattr(event, "transcript", "") or ""
+            memory.log("user", said)
+            if lessons is not None:
+                lessons.heard(said)
+        except Exception:
+            pass
+
+    @session.on("function_tools_executed")
+    def _on_tools_done(event: object) -> None:
+        """Learn the recipe that just worked, without being asked to.
+
+        This is the half of learning that costs the user nothing. A request
+        that succeeds first time is a demonstration, and writing down what was
+        done means the same words next week go straight to the same steps.
+        """
+        if lessons is None:
+            return
+        try:
+            calls = []
+            for call, output in event.zipped():
+                calls.append((
+                    getattr(call, "name", "") or "",
+                    getattr(call, "arguments", "") or "",
+                    bool(getattr(output, "is_error", False)) if output else True,
+                ))
+            lessons.watched(calls)
         except Exception:
             pass
 

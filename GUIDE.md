@@ -146,9 +146,29 @@ have a key for shows up in the dropdown.
 Every model this build can use, and whether a key is stored. Paste a key to switch
 one on. Keys are encrypted in your vault, never in a file you might share.
 
+At the top is **Money**, and it starts off. With it off, nothing Jarvis does can
+cost you anything — the voice, the browser, memory, learning and the thinking all
+run on the free Google key you already have. The paid models are in the dropdown
+but locked; picking one while Money is off changes nothing, and a free brain
+answers instead. Turn Money on and they unlock, and the panel shows what has been
+spent in the last thirty days.
+
 The key box **rejects anything with a space in it**. That's not fussiness — a
 command pasted into a key box is what broke it last week, and it fails so far from
 the cause that it looks like a microphone problem.
+
+### Learned
+Everything you have taught it, in your words and its steps, with how many times
+each one has been used. Teaching happens out loud — "when I say put music on,
+open Spotify and press play" — and lands here. So does a correction: the old way
+is replaced, not kept beside the new one.
+
+Lessons marked **FROM WATCHING** were not taught; it worked out what to do, the
+request succeeded, and it wrote down what worked. Those never overwrite something
+you said out loud. Anything here can be deleted with one button.
+
+You can also type a lesson in directly, which is the easier way to write a long
+one.
 
 ### Memory
 What it knows about you. It adds things here itself as you talk; you can correct or
@@ -167,15 +187,48 @@ Jarvis has two halves, on purpose.
 The **voice** is Gemini Live — it hears you and answers in under a second,
 which is what makes conversation feel natural. It is fast and shallow by design.
 
-The **thinking** is Claude Opus 5. Anything where being right matters more than
-being quick — working out how to do something, writing a script or an email,
-analysing, diagnosing what went wrong — gets handed over, and the voice speaks
-the result. It says "let me think about that" first, because it takes a few
-seconds.
+The **thinking** is a second brain. Anything where being right matters more than
+being quick — writing a script or an email, analysing, diagnosing what went
+wrong — gets handed over, and the voice speaks the result. It says "let me think
+about that" first, because it takes a few seconds.
 
-You pick which AI thinks, in the **AI tab**. It needs a Claude key; without one
-it answers off the cuff like before. You can switch it off entirely in
+**It is free.** By default Jarvis picks the best free brain it has: a model on
+your own machine if you're running Ollama, otherwise Google's free tier on the
+same key the voice already uses. Nothing to buy, nothing to set up.
+
+Claude is better at hard problems and costs money per question, so it is off
+until you turn **Money** on in the AI tab. That switch wins over the dropdown: a
+paid model chosen while Money is off is ignored, not honoured, so a stale setting
+can never quietly start spending. You can switch thinking off entirely in
 **Permissions**.
+
+It will not think its way through a job you asked it to do. "Open my Spotify" is
+a tool call, not a question, and treating it as a question is exactly what made
+it worse for a while.
+
+### Learning — teach it once
+This is the part that makes it better at *your* work rather than work in general.
+
+Tell it how you want something done and it writes the recipe down:
+
+> "When I say put music on, open Spotify and press play."
+> "My email means Gmail, not Outlook."
+> "No — my Spotify, not the web player."
+
+Every later call starts with those lessons already in front of it, so the next
+time you say those words it follows the recipe instead of working it out again.
+That is both faster and right more often. Correcting it replaces the old way
+rather than keeping both.
+
+It also learns by watching. When a request works first time, it writes down what
+worked by itself — you do not have to say anything. Those are held more loosely
+and never overwrite a lesson you gave out loud, and a failed attempt is never
+learned.
+
+Everything it has learned is in the **Learned** tab, in plain words, editable and
+deletable. Nothing is a black box, nothing is training a model, and nothing is
+uploaded anywhere: it is rows in the same local database as the rest of your
+memory.
 
 ### Conversation
 - Real-time voice, both directions, with proper echo cancellation
@@ -342,7 +395,9 @@ Against your list — what's already there, and what I'd build in what order.
 | Persistent long-term memory | Done, shared database |
 | Autonomous browser control | Done, 11 tools |
 | Speaker voice biometrics | Built — CLI only, not yet in the web app |
-| Local LLM fallback (Ollama) | Built — not yet wired to the voice agent |
+| Local LLM fallback (Ollama) | Wired in — it is now the *first* choice for thinking when it's running |
+| Everything free by default | Done — paid AI is one switch in the AI tab, off until you flip it |
+| Teach it once and it remembers | Done — the Learned tab, taught out loud or typed in |
 | Custom desktop HUD overlay | The orb |
 | Mobile app | Flutter app is there, needs the SDK to build |
 | Local OS control | Built in `jarvis/core/computer.py` |
@@ -362,6 +417,22 @@ Against your list — what's already there, and what I'd build in what order.
 ### Worth doing later
 Financial tracking, IDE and Git integration, gesture control, multi-agent
 orchestration, automated research reports.
+
+### About training your own model
+You asked whether it should learn by being trained on your conversations. I built
+the learning differently, on purpose, and it's worth knowing why.
+
+The realtime voice model cannot be fine-tuned at all — that option does not exist.
+And even where fine-tuning is possible it needs thousands of examples before it
+shifts behaviour, takes hours and money per round, and gives you a black box: when
+it gets something wrong you can't open it up and see what it thinks you meant, you
+can only feed it more examples and hope.
+
+Remembering does the same job better for what you actually asked for. Teaching is
+one sentence and takes effect on the next thing you say. It costs nothing. You can
+read every lesson back, edit it, and delete it. And "most of the times I give him
+the same tasks" is exactly the case remembering is best at — a recipe in front of
+it beats a tendency baked into weights.
 
 ### I'd leave this one alone
 **Self-debugging and auto-patching its own code.** An agent with write access to

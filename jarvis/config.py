@@ -54,13 +54,16 @@ class KeySpec:
 
 
 KEY_SPECS: tuple[KeySpec, ...] = (
-    KeySpec("ANTHROPIC_API_KEY", "Claude (main brain)", "console.anthropic.com",
-            "pay-as-you-go, ~$5 goes a long way", required=True,
-            note="The one key JARVIS genuinely needs. Everything else is optional."),
+    KeySpec("GEMINI_API_KEY", "Google Gemini (voice + free thinking)",
+            "aistudio.google.com", "free", required=True,
+            note="The only key JARVIS needs. It runs the voice and, on the free "
+                 "tier, the thinking as well. Costs nothing."),
+    KeySpec("ANTHROPIC_API_KEY", "Claude (optional, smarter, costs money)",
+            "console.anthropic.com", "pay-as-you-go, ~$5 goes a long way",
+            note="Only used once you switch paid thinking on in the AI tab. "
+                 "Until then this key sits unused and nothing is billed."),
     KeySpec("OPENAI_API_KEY", "OpenAI (optional brain/images)", "platform.openai.com",
             "$5 trial credit"),
-    KeySpec("GEMINI_API_KEY", "Gemini (optional cheap brain)", "aistudio.google.com",
-            "generous free tier"),
     KeySpec("DEEPGRAM_API_KEY", "Deepgram (optional faster speech-to-text)",
             "console.deepgram.com", "$200 credit",
             note="Only needed if local Whisper is too slow on your machine."),
@@ -272,14 +275,18 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "timezone": "",                      # blank = system timezone
 
     # --- models ---------------------------------------------------------- #
+    # Which paid model each job uses IF you ever switch paid thinking on. With
+    # thinking.allow_paid false - the default - none of these is ever reached.
     "models": {
         "voice": "claude-haiku-4-5",     # fast conversational replies
-        "general": "claude-opus-5",      # default thinking model
+        "general": "claude-sonnet-5",    # default thinking model
         "deep": "claude-opus-5",         # overnight autonomous missions
-        "vision": "claude-opus-5",       # screenshots / image understanding
+        "vision": "claude-sonnet-5",     # screenshots / image understanding
     },
-    "effort": {"voice": "low", "general": "high", "deep": "xhigh"},
-    "provider_order": ["anthropic", "openai", "gemini", "ollama"],
+    "effort": {"voice": "low", "general": "medium", "deep": "high"},
+    # Free brains first. The order only decides preference; anything without a
+    # key or a running server is skipped.
+    "provider_order": ["ollama", "gemini", "anthropic", "openai"],
 
     # --- which brain answers ---------------------------------------------- #
     "brain": {
@@ -340,12 +347,18 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
     # --- the thinking half ------------------------------------------------ #
     # The voice model is fast and shallow by design. Anything needing real
-    # reasoning is handed to Claude instead. Effort starts high because the
-    # complaint this answers is "not smart enough" - lower it if you would
-    # rather have the seconds back.
+    # reasoning is handed to a second brain - and that brain is free unless
+    # you decide otherwise.
+    #
+    # "auto" means the best free option you actually have: a model on your own
+    # machine if Ollama is running, otherwise Google's free tier on the key the
+    # voice already uses. allow_paid is the money switch, and it wins: a paid
+    # model named here while it is false is ignored, not honoured, so a stale
+    # setting can never quietly start spending.
     "thinking": {
-        "model": "claude-opus-5",
-        "effort": "high",
+        "model": "auto",
+        "effort": "medium",              # only Claude has this dial
+        "allow_paid": False,             # the only thing that unlocks spending
     },
 
     # --- what Jarvis is allowed to do ------------------------------------- #
@@ -438,6 +451,20 @@ class Settings:
     #: Old default values that should be replaced rather than preserved. A
     #: saved settings file always wins over a default, so shipping a better
     #: default would otherwise never reach anyone who has already run setup.
+    #: Dotted keys whose old default should be replaced rather than kept. Same
+    #: reasoning as above, for settings that live inside a nested block.
+    _STALE_NESTED = {
+        # Thinking used to default to a paid model, which meant an assistant
+        # that did nothing useful until you had bought credit. Anyone still
+        # carrying that default gets the free one; anyone who deliberately
+        # chose it has allow_paid on, and that is checked before this runs.
+        "thinking.model": ["claude-opus-5"],
+        "thinking.effort": ["high"],
+        # The CLI brain, same story.
+        "models.general": ["claude-opus-5"],
+        "models.voice": ["claude-haiku-4-5"],
+    }
+
     _STALE_DEFAULTS = {
         "personality": [
             "Dry, precise, quietly amused. Brief by default - one or two sentences "
@@ -459,6 +486,17 @@ class Settings:
         for key, stale in cls._STALE_DEFAULTS.items():
             if str(raw.get(key, "")).strip() in {s.strip() for s in stale}:
                 raw.pop(key, None)
+
+        # Nested ones, same idea. Skipped entirely once paid thinking has been
+        # switched on: at that point a Claude model is a choice, not a leftover.
+        if not bool((raw.get("thinking") or {}).get("allow_paid", False)):
+            for dotted, stale in cls._STALE_NESTED.items():
+                head, _, tail = dotted.partition(".")
+                block = raw.get(head)
+                if not isinstance(block, dict):
+                    continue
+                if str(block.get(tail, "")).strip() in {s.strip() for s in stale}:
+                    block.pop(tail, None)
 
         return cls(raw)
 
@@ -501,10 +539,18 @@ class Settings:
         return Path(self.get("autonomy.workspace", str(paths.DEFAULT_WORKSPACE))).expanduser()
 
     def model_for(self, tier: str) -> str:
-        return self.get(f"models.{tier}") or self.get("models.general") or "claude-opus-5"
+        return self.get(f"models.{tier}") or self.get("models.general") or "auto"
 
     def effort_for(self, tier: str) -> str:
-        return self.get(f"effort.{tier}") or "high"
+        return self.get(f"effort.{tier}") or "medium"
+
+    @property
+    def allow_paid(self) -> bool:
+        """Is JARVIS allowed to spend money on thinking?
+
+        One place to ask, so nothing has to remember where the switch lives.
+        """
+        return bool(self.get("thinking.allow_paid", False))
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

@@ -170,7 +170,10 @@ class JarvisMemory:
 
     @property
     def tools(self) -> list:
-        return [self.remember, self.recall, self.forget, self.search_memory]
+        # No `recall` tool: everything it would find is already in the
+        # instructions at the start of the call, so it was a tool whose
+        # answer the model already had.
+        return [self.remember, self.forget, self.search_memory]
 
     @function_tool()
     async def remember(self, context: RunContext, key: str, value: str) -> str:

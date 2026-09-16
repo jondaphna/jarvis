@@ -7,10 +7,10 @@ profile that was signed into nobody.
 
 import json
 
-import launcher
+import chrome_finder
 import pytest
 
-import chrome_finder
+import launcher
 
 
 class TestSites:

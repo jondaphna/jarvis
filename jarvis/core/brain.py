@@ -222,6 +222,22 @@ class Brain:
 
         if escalate:
             tier = self.settings.get("brain.escalate_tier", TIER_DEEP)
+
+        # Claude is the best of these and the only one that costs money, so it
+        # is reached only when you have said it may be. Otherwise fall through
+        # to Google's free tier, which answers questions perfectly well but
+        # cannot drive tools - a degraded JARVIS beats a JARVIS that refuses to
+        # start because there is no credit on an account.
+        if bool(self.settings.get("thinking.allow_paid", False)) and \
+                self.anthropic.available():
+            return self.anthropic, self.model_for(tier), "claude"
+
+        gemini = self.providers.get("gemini")
+        if gemini is not None and gemini.available():
+            return gemini, gemini.default_model(), "gemini-free"
+
+        # Nothing free is reachable. Claude with a stored key is better than
+        # nothing at all, and the caller shows which brain answered.
         return self.anthropic, self.model_for(tier), "claude"
 
     def ready(self) -> bool:
@@ -382,8 +398,12 @@ class Brain:
                 raise
             except Exception as exc:
                 # A wobbly local model shouldn't end the conversation - hand the
-                # turn to Claude and carry on.
-                if brain_label == "local" and iteration == 1 and self.anthropic.available():
+                # turn to Claude and carry on. Only when you have said Claude
+                # may be used, though: a local model stumbling is not consent
+                # to start spending.
+                if (brain_label == "local" and iteration == 1
+                        and self.settings.allow_paid
+                        and self.anthropic.available()):
                     log.warning("local model failed (%s) - falling back to Claude", exc)
                     bus.publish(events.INFO, "Local model stumbled; using Claude.")
                     provider, model, brain_label = self.anthropic, self.model_for(tier), "claude"

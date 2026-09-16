@@ -6,8 +6,9 @@ These tests exist to keep the enforcement real - the tool is removed from the
 list the model is handed, so there is nothing to argue with.
 """
 
-import permissions
 import pytest
+
+import permissions
 
 
 class FakeSettings:

@@ -25,7 +25,7 @@ from typing import Any, Iterator, Sequence
 
 from .. import paths
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -132,6 +132,20 @@ CREATE TABLE IF NOT EXISTS usage (
     purpose       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_usage_at ON usage(at);
+
+CREATE TABLE IF NOT EXISTS lessons (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    trigger     TEXT NOT NULL UNIQUE,
+    said        TEXT NOT NULL DEFAULT '',
+    steps       TEXT NOT NULL,
+    source      TEXT NOT NULL DEFAULT 'taught',
+    uses        INTEGER NOT NULL DEFAULT 0,
+    confidence  REAL NOT NULL DEFAULT 1.0,
+    created_at  TEXT NOT NULL,
+    used_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_lessons_rank
+    ON lessons(confidence DESC, uses DESC, used_at DESC);
 
 CREATE TABLE IF NOT EXISTS artifacts (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -303,6 +317,151 @@ class Memory:
         if not facts:
             return ""
         lines = [f"- {f['key']}: {f['value']}" for f in facts]
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------ #
+    # Lessons - things you taught it, and things it watched you accept
+    #
+    # A fact is what JARVIS knows. A lesson is what JARVIS can do, and it is
+    # the difference between an assistant that remembers your name and one
+    # that gets better at your work. Teach it once, out loud, and the next
+    # time the same words arrive the recipe is already in front of it - so it
+    # acts instead of reasoning its way back to the same answer.
+    # ------------------------------------------------------------------ #
+
+    #: Words that change nothing about which job is being asked for. Stripping
+    #: them is what makes "Jarvis, could you open my Spotify please" and "open
+    #: spotify" the same lesson rather than two near-identical rows that each
+    #: get learned separately and neither of which ever fires.
+    _FILLER = (
+        "hey jarvis", "ok jarvis", "okay jarvis", "jarvis", "please", "thanks",
+        "thank you", "could you", "can you", "would you", "will you",
+        "i want you to", "i need you to", "i want", "for me", "right now",
+        "go ahead", "and", "just", "now", "my", "the", "a", "an", "some",
+        "again", "quickly", "then",
+    )
+
+    @staticmethod
+    def normalise_trigger(text: str) -> str:
+        """The lookup key for a spoken phrase: lowercase, bare, filler gone."""
+        import re
+
+        cleaned = re.sub(r"[^a-z0-9 ]+", " ", (text or "").lower())
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        for word in Memory._FILLER:
+            cleaned = re.sub(rf"\b{re.escape(word)}\b", " ", cleaned)
+        return re.sub(r"\s+", " ", cleaned).strip()
+
+    def learn(self, trigger: str, steps: str, said: str = "",
+              source: str = "taught", confidence: float | None = None) -> str:
+        """Record how to do something. Teaching again replaces the old way.
+
+        Replacing rather than appending is the point: when you correct JARVIS,
+        you want the wrong way gone, not kept alongside the right one where it
+        can be picked again.
+        """
+        key = self.normalise_trigger(trigger)
+        if not key or not steps.strip():
+            return ""
+        if confidence is None:
+            confidence = 1.0 if source in ("taught", "corrected") else 0.5
+        with self._write() as conn:
+            existing = conn.execute(
+                "SELECT source, uses FROM lessons WHERE trigger=?", (key,)
+            ).fetchone()
+            # Something you said beats something it inferred from watching, so
+            # a watched recipe never overwrites one you taught by hand.
+            if existing and existing["source"] in ("taught", "corrected") \
+                    and source == "watched":
+                return key
+            kept_uses = existing["uses"] if existing else 0
+            conn.execute(
+                "INSERT INTO lessons(trigger, said, steps, source, uses, "
+                "confidence, created_at) VALUES(?,?,?,?,?,?,?) "
+                "ON CONFLICT(trigger) DO UPDATE SET steps=excluded.steps, "
+                "said=excluded.said, source=excluded.source, "
+                "confidence=excluded.confidence",
+                (key, (said or trigger).strip(), steps.strip(), source,
+                 kept_uses, float(confidence), _now()),
+            )
+        return key
+
+    def lessons(self, limit: int = 40) -> list[dict[str, Any]]:
+        """Everything it has been taught, most trusted and most used first."""
+        rows = self._query(
+            "SELECT id, trigger, said, steps, source, uses, confidence, "
+            "created_at, used_at FROM lessons "
+            "ORDER BY confidence DESC, uses DESC, COALESCE(used_at, created_at) DESC "
+            "LIMIT ?", (limit,))
+        return [dict(r) for r in rows]
+
+    def lesson_for(self, text: str) -> dict[str, Any] | None:
+        """The lesson for this phrase: an exact key first, then near enough.
+
+        People do not repeat themselves word for word. "play some music on
+        Spotify" and "put music on Spotify" are one request, and a store that
+        only answers to an exact match would learn each of them separately and
+        fire for neither. So after the exact key fails, the best overlapping
+        lesson wins - provided it overlaps a lot, because a wrong recipe
+        confidently applied is worse than none.
+        """
+        key = self.normalise_trigger(text)
+        if not key:
+            return None
+        rows = self._query(
+            "SELECT id, trigger, said, steps, source, uses, confidence "
+            "FROM lessons WHERE trigger=?", (key,))
+        if rows:
+            return dict(rows[0])
+
+        words = set(key.split())
+        if len(words) < 2:
+            return None
+        best, best_score = None, 0.0
+        for row in self.lessons(limit=200):
+            other = set(str(row["trigger"]).split())
+            if not other:
+                continue
+            overlap = len(words & other) / len(words | other)
+            if overlap > best_score:
+                best, best_score = row, overlap
+        return best if best_score >= 0.6 else None
+
+    def lesson_used(self, trigger: str) -> None:
+        """Count a lesson as having been useful. Never raises."""
+        key = self.normalise_trigger(trigger)
+        if not key:
+            return
+        try:
+            with self._write() as conn:
+                conn.execute(
+                    "UPDATE lessons SET uses = uses + 1, used_at = ? "
+                    "WHERE trigger = ?", (_now(), key))
+        except Exception:
+            pass
+
+    def unlearn(self, trigger: str) -> bool:
+        key = self.normalise_trigger(trigger)
+        with self._write() as conn:
+            return conn.execute(
+                "DELETE FROM lessons WHERE trigger=?", (key,)).rowcount > 0
+
+    def lessons_block(self, limit: int = 25) -> str:
+        """Lessons rendered for the system prompt. Empty when there are none.
+
+        Deliberately capped. The value is in the model seeing the recipe
+        without having to go looking for it, and a block long enough to bury
+        the current request defeats that.
+        """
+        rows = self.lessons(limit=limit)
+        if not rows:
+            return ""
+        lines = []
+        for row in rows:
+            said = (row["said"] or row["trigger"]).strip()
+            steps = " ".join(str(row["steps"]).split())
+            marker = "" if row["source"] in ("taught", "corrected") else " (from watching you)"
+            lines.append(f'- When they say "{said}"{marker}: {steps}')
         return "\n".join(lines)
 
     # ------------------------------------------------------------------ #

@@ -144,7 +144,7 @@ class TestDangerousThingsAreOffByDefault:
         assert "forbidden" in source
 
 
-class TestSecretsNeverReachDisk():
+class TestSecretsNeverReachDisk:
     def test_no_key_is_committed_anywhere(self) -> None:
         """A key in a tracked file is a key on GitHub."""
         repo = Path(__file__).resolve().parents[2]

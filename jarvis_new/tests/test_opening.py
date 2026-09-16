@@ -17,11 +17,13 @@ the page, type in it and click. One window, one tab, reused.
 """
 
 import inspect
+from typing import ClassVar
+
+import pytest
 
 import launcher
 import live_browser
 import os_tools
-import pytest
 from browser import BrowserManager
 from tools import BrowserTools
 
@@ -131,7 +133,7 @@ class TestOneWindowReused:
         existing = FakePage()
 
         class FakeContext:
-            pages = [existing]
+            pages: ClassVar[list] = [existing]
             # A real context reports whether its browser is still connected;
             # attach() checks that before reusing one, so the fake needs it.
             browser = type("B", (), {"is_connected": staticmethod(lambda: True)})()

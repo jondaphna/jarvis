@@ -47,18 +47,17 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability(
         "read_web", "Read web pages",
         "Read a page to answer your question, and search the web.",
-        ("fetch_page", "search_the_web", "read_page", "inspect_page",
-         "go_back", "take_screenshot", "scroll")),
+        ("read_web_page", "search_the_web", "inspect_page")),
     Capability(
         "control_web", "Click and type in pages",
         "Fill boxes and press buttons on the page you are looking at. "
         "Needed to actually play a song rather than just find it.",
-        ("click", "type_text", "press_key", "confirm_browser_action"),
+        ("click", "type_text", "page_action", "confirm_browser_action"),
         risk="medium"),
     Capability(
-        "apps", "Open apps and folders",
-        "Start programs on this computer and open folders.",
-        ("open_app", "open_folder")),
+        "apps", "Open apps and manage windows",
+        "Start programs and folders, and close, focus or minimise windows.",
+        ("open_app", "window_action")),
     Capability(
         "media", "Volume and music",
         "Turn the volume up and down, play, pause and skip.",
@@ -70,11 +69,17 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability(
         "memory", "Remember things about you",
         "Save and recall what you tell it, and search past conversations.",
-        ("remember", "recall", "forget", "search_memory")),
+        ("remember", "forget", "search_memory")),
+    Capability(
+        "learning", "Learn from you",
+        "Let you teach it how you want jobs done, and let it write down a "
+        "recipe that worked so the same request lands first time next time.",
+        ("remember_how",)),
     Capability(
         "reasoning", "Think hard about things",
-        "Hand difficult questions, plans and writing to Claude instead of "
-        "answering off the cuff. Slower, and much better.",
+        "Hand difficult questions, plans and writing to a second brain "
+        "instead of answering off the cuff. Slower, and much better. Free "
+        "unless you switch on a paid model in the AI tab.",
         ("think",)),
     Capability(
         "power", "Lock, sleep, restart, shut down",

@@ -23,18 +23,15 @@ class BrowserTools:
         return [
             self.open_url,
             self.search_on_site,
-            self.fetch_page,
-            self.search_the_web,
-            self.read_page,
+            self.read_web_page,
             self.inspect_page,
-            self.go_back,
-            self.take_screenshot,
             self.click,
-            self.confirm_browser_action,
             self.type_text,
-            self.scroll,
-            self.press_key,
+            self.page_action,
+            self.confirm_browser_action,
+            self.search_the_web,
         ]
+
 
     @function_tool()
     async def open_url(self, context: RunContext, site: str) -> dict[str, str]:
@@ -114,38 +111,47 @@ class BrowserTools:
             raise ToolError(str(exc)) from exc
 
     @function_tool()
-    async def fetch_page(self, context: RunContext, url: str) -> dict[str, str]:
-        """Load a page invisibly so YOU can read it. The user never sees this.
+    async def read_web_page(self, context: RunContext, url: str = "") -> dict:
+        """Read a page so you can answer a question about it.
 
-        This is for answering questions - "what does this article say", "what's
-        the price on that page". It runs in a hidden browser that is signed into
-        nothing.
-
-        It is NOT for showing the user anything. If they said "open" something,
-        they want to look at it themselves: use open_url, which opens their own
-        browser with their own accounts.
+        Give a url to go there first, or leave it out to read the page already
+        open. Use this when they want an answer; use open_url when they want to
+        look at something themselves.
 
         Args:
-            url: A complete http or https URL.
+            url: Optional. A site name or full URL to open before reading.
         """
-        try:
+        if url.strip():
             import launcher
 
-            resolved = launcher.site_url(url) or url
-        except Exception:
-            resolved = url
-        try:
-            return await self.browser.open_url(resolved)
-        except BrowserError as exc:
-            raise ToolError(str(exc)) from exc
-
-    @function_tool()
-    async def read_page(self, context: RunContext) -> dict[str, str | bool]:
-        """Read the visible text from the current browser page."""
+            try:
+                await self.browser.open_url(launcher.site_url(url) or url)
+            except BrowserError as exc:
+                raise ToolError(str(exc)) from exc
         try:
             return await self.browser.read_page()
         except BrowserError as exc:
             raise ToolError(str(exc)) from exc
+
+    @function_tool()
+    async def page_action(self, context: RunContext, action: str) -> dict:
+        """Move around the page you already have open.
+
+        Args:
+            action: "back", "up", "down", "enter", "escape", or "tab".
+        """
+        wanted = (action or "").strip().lower()
+        keys = {"enter": "Enter", "escape": "Escape", "tab": "Tab"}
+        try:
+            if wanted == "back":
+                return await self.browser.go_back()
+            if wanted in ("up", "down"):
+                return await self.browser.scroll(wanted)
+            if wanted in keys:
+                return await self.browser.press_key(keys[wanted])
+        except BrowserError as exc:
+            raise ToolError(str(exc)) from exc
+        raise ToolError("Say back, up, down, enter, escape or tab.")
 
     @function_tool()
     async def inspect_page(self, context: RunContext) -> dict[str, object]:
@@ -156,22 +162,6 @@ class BrowserTools:
         """
         try:
             return await self.browser.inspect_page()
-        except BrowserError as exc:
-            raise ToolError(str(exc)) from exc
-
-    @function_tool()
-    async def go_back(self, context: RunContext) -> dict[str, str]:
-        """Go back to the previous page in the agent-controlled browser."""
-        try:
-            return await self.browser.go_back()
-        except BrowserError as exc:
-            raise ToolError(str(exc)) from exc
-
-    @function_tool()
-    async def take_screenshot(self, context: RunContext) -> dict[str, str | int | bool]:
-        """Capture the current browser page for diagnostics."""
-        try:
-            return await self.browser.take_screenshot()
         except BrowserError as exc:
             raise ToolError(str(exc)) from exc
 
@@ -221,30 +211,6 @@ class BrowserTools:
         """
         try:
             return await self.browser.type_text(target, text)
-        except BrowserError as exc:
-            raise ToolError(str(exc)) from exc
-
-    @function_tool()
-    async def scroll(self, context: RunContext, direction: str) -> dict[str, str]:
-        """Scroll the current browser page up or down.
-
-        Args:
-            direction: Either 'up' or 'down'.
-        """
-        try:
-            return await self.browser.scroll(direction)  # type: ignore[arg-type]
-        except BrowserError as exc:
-            raise ToolError(str(exc)) from exc
-
-    @function_tool()
-    async def press_key(self, context: RunContext, key: str) -> dict[str, str]:
-        """Press a safe navigation key in the current browser page.
-
-        Args:
-            key: One of Enter, Escape, Tab, an arrow key, or Backspace.
-        """
-        try:
-            return await self.browser.press_key(key)
         except BrowserError as exc:
             raise ToolError(str(exc)) from exc
 

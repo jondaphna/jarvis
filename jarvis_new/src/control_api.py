@@ -250,6 +250,95 @@ class Control:
                  "content": getattr(m, "content", ""),
                  "at": str(getattr(m, "created_at", ""))} for m in history]
 
+    # -- lessons: what you have taught it ---------------------------------- #
+
+    def lessons(self, limit: int = 200) -> list[dict[str, Any]]:
+        from jarvis.core.memory import Memory
+
+        try:
+            return Memory().lessons(limit=limit)
+        except Exception:
+            return []
+
+    def teach(self, trigger: str, steps: str) -> dict[str, Any]:
+        from jarvis.core.memory import Memory
+
+        trigger, steps = trigger.strip(), steps.strip()
+        if not trigger or not steps:
+            raise ValueError("Both the phrase and the steps are needed.")
+        memory = Memory()
+        key = memory.learn(trigger, steps, said=trigger,
+                           source="corrected" if memory.lesson_for(trigger)
+                           else "taught")
+        if not key:
+            raise ValueError("That phrase has nothing in it to learn.")
+        return {"trigger": key, "steps": steps}
+
+    def unlearn(self, trigger: str) -> dict[str, Any]:
+        from jarvis.core.memory import Memory
+
+        return {"trigger": trigger, "forgotten": Memory().unlearn(trigger)}
+
+    # -- what thinking costs ------------------------------------------------ #
+
+    def thinking_models(self) -> list[dict[str, Any]]:
+        """Every brain you can choose, honest about which ones cost money.
+
+        Built rather than hard-coded so the free options say what they will
+        actually use - "Gemini 2.5 Flash", not "whatever Google gives you" -
+        and so an Ollama install that appeared this morning shows up.
+        """
+        import thinker
+
+        options: list[dict[str, Any]] = [{
+            "id": "auto",
+            "label": "Free - best free brain you have (recommended)",
+            "free": True,
+            "detail": thinker.describe(),
+        }]
+        ollama = thinker.Ollama()
+        if ollama.available():
+            options.append({
+                "id": f"ollama:{ollama.model()}",
+                "label": f"Free - {ollama.model()} on this machine",
+                "free": True,
+                "detail": "Runs locally. Nothing you say leaves the computer.",
+            })
+        gemini = thinker.Gemini()
+        if gemini.available():
+            options.append({
+                "id": gemini.model(),
+                "label": f"Free - Google {gemini.model()}",
+                "free": True,
+                "detail": "Google's free tier, on the key the voice already uses.",
+            })
+        for model, detail in thinker.PAID_MODELS.items():
+            options.append({
+                "id": model,
+                "label": f"Paid - {detail.split(' - ')[0]}",
+                "free": False,
+                "detail": detail,
+            })
+        return options
+
+    def costs(self) -> dict[str, Any]:
+        """What is switched on that can spend money, and what has been spent."""
+        from jarvis.core.memory import Memory
+
+        import thinker
+
+        try:
+            spent = Memory().spend_since(hours=24 * 30)
+        except Exception:
+            spent = 0.0
+        return {
+            "allow_paid": thinker.paid_allowed(),
+            "using": thinker.describe(),
+            "spent_30d_usd": round(float(spent), 4),
+            "note": ("Nothing here spends money while paid thinking is off. "
+                     "The voice, the browser, memory and learning are free."),
+        }
+
     # -- custom commands --------------------------------------------------- #
 
     def commands(self) -> list[dict[str, Any]]:
@@ -316,11 +405,9 @@ class Control:
             "plugins": PLUGINS,
             "browser_profiles": self.browser_profiles(),
             "permissions": self.permissions(),
-            "thinking_models": [
-                {"id": "claude-opus-5", "label": "Claude Opus 5 — smartest"},
-                {"id": "claude-sonnet-5", "label": "Claude Sonnet 5 — faster, cheaper"},
-                {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5 — fastest"},
-            ],
+            "thinking_models": self.thinking_models(),
+            "costs": self.costs(),
+            "lessons": self.lessons(),
             "authorisations": AUTHORISATIONS,
         }
 
@@ -441,6 +528,25 @@ class _Handler(BaseHTTPRequestHandler):
                 if rest[1:]:
                     return control.transcript(int(rest[1]))
                 return control.conversations()
+
+        if head == "lessons":
+            if method == "GET":
+                return control.lessons()
+            if method == "POST":
+                body = self._body()
+                # Deleting by POST rather than by path. A spoken trigger is a
+                # sentence with spaces in it, and putting one through two
+                # proxies as a URL segment is a round of encoding bugs nobody
+                # needs; in a body it is just a string.
+                if rest[:1] == ["forget"]:
+                    return control.unlearn(str(body.get("trigger", "")))
+                return control.teach(str(body.get("trigger", "")),
+                                     str(body.get("steps", "")))
+            if method == "DELETE" and rest:
+                return control.unlearn(rest[0])   # _route already unquoted it
+
+        if head == "costs" and method == "GET":
+            return control.costs()
 
         if head == "commands":
             if method == "GET":

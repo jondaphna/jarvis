@@ -14,8 +14,11 @@ and the context-window guard switched on.
 
 import inspect
 
-import agent
 import pytest
+from google.genai import types as genai_types
+
+import agent
+
 
 class LiveContext:
     """A context that reports itself connected, like a real one."""
@@ -23,9 +26,6 @@ class LiveContext:
     def __init__(self, pages):
         self.pages = pages
         self.browser = type("B", (), {"is_connected": staticmethod(lambda: True)})()
-
-
-from google.genai import types as genai_types
 
 
 @pytest.fixture
