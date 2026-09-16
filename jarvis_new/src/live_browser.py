@@ -28,6 +28,7 @@ import socket
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
@@ -111,8 +112,15 @@ def seed_from_your_chrome(target: Path) -> bool:
 
         destination = target / "Default"
         destination.mkdir(parents=True, exist_ok=True)
-        if (destination / "Cookies").exists():
-            return False                     # already seeded; don't clobber
+
+        # Seed once, ever. Chrome has kept cookies in Default/Network/Cookies
+        # since v96, so a guard that looked for Default/Cookies never fired -
+        # meaning every cold start re-copied your cookies over the top and
+        # threw away any sign-in done in Jarvis's own window. A marker file is
+        # checked instead, because it cannot move when Chrome reorganises.
+        marker = target / ".seeded"
+        if marker.exists():
+            return False
 
         # The key lives outside the profile folder, so it has to come too or
         # the cookies are undecryptable noise.
@@ -131,6 +139,9 @@ def seed_from_your_chrome(target: Path) -> bool:
                 shutil.copytree(candidate, destination / folder,
                                 dirs_exist_ok=True)
                 copied = True
+        if copied:
+            marker.write_text("seeded once; delete to copy again\n",
+                              encoding="utf-8")
         return copied
     except Exception:
         return False
@@ -168,6 +179,28 @@ class LiveBrowser:
                 "your sites - get it from google.com/chrome.")
         return found
 
+    def _ours_is_running(self) -> bool:
+        """Is *our* Chrome on that port, rather than something else?
+
+        An open port is not proof. Attaching to whatever happens to hold 9222
+        would mean driving a browser that isn't ours, so the DevTools endpoint
+        is asked what it is first.
+        """
+        if not port_is_open(self.port):
+            return False
+        try:
+            import json
+            import urllib.request
+
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({}))
+            with opener.open(
+                    f"http://127.0.0.1:{self.port}/json/version", timeout=2) as r:
+                browser = str(json.load(r).get("Browser", ""))
+            return "chrom" in browser.lower()
+        except Exception:
+            return False
+
     def launch(self) -> None:
         """Start an ordinary Chrome window with debugging switched on.
 
@@ -175,7 +208,7 @@ class LiveBrowser:
         announces itself as automated, and sign-in pages refuse it. This one is
         a normal Chrome that happens to be listening on a local port.
         """
-        if port_is_open(self.port):
+        if self._ours_is_running():
             return
 
         seed_from_your_chrome(self.profile)
@@ -195,8 +228,13 @@ class LiveBrowser:
 
     async def attach(self, timeout: float = 25.0):
         """Connect to that window. Starts it first if it isn't up."""
-        if self._context is not None:
+        if self._context is not None and self._usable(self._context):
             return self._context
+        # Not usable any more - most often because the window was closed.
+        # Holding on to it would fail every browser tool for the rest of the
+        # conversation, which looks exactly like Jarvis losing the ability to
+        # do anything. Drop it and reconnect instead.
+        self._context = None
 
         from playwright.async_api import async_playwright
 
@@ -217,6 +255,19 @@ class LiveBrowser:
         self._context = (browser.contexts[0] if browser.contexts
                          else await browser.new_context())
         return self._context
+
+    @staticmethod
+    def _usable(context: Any) -> bool:
+        """Is this context still connected to a live browser?"""
+        try:
+            browser = context.browser
+            if browser is not None and not browser.is_connected():
+                return False
+            # Touching .pages raises once the connection is gone.
+            _ = context.pages
+            return True
+        except Exception:
+            return False
 
     # ------------------------------------------------------------------ #
     # The tab you are looking at

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import re
 import sys
 import time
@@ -165,6 +166,38 @@ def jarvis_profile_dir() -> Path:
     return root
 
 
+def _speakable(what: str):
+    """Turn any browser failure into something Jarvis can say out loud.
+
+    Only timeouts were being caught. Everything else - above all "Target page,
+    context or browser has been closed", which is what you get the moment the
+    window is shut - escaped as a raw Playwright error. That sails past
+    BrowserTools' `except BrowserError` and surfaces as an unhandled tool
+    exception, so one closed window turned into a broken assistant instead of a
+    sentence explaining itself.
+    """
+
+    def wrap(method):
+        @functools.wraps(method)
+        async def guarded(*args, **kwargs):
+            try:
+                return await method(*args, **kwargs)
+            except BrowserError:
+                raise
+            except PlaywrightTimeoutError as exc:
+                raise BrowserError(f"{what} took too long.") from exc
+            except Exception as exc:
+                if "closed" in str(exc).lower():
+                    raise BrowserError(
+                        "The browser window was closed. Ask me to open "
+                        "something and I'll start a new one.") from exc
+                raise BrowserError(f"{what} didn't work: {exc}") from exc
+
+        return guarded
+
+    return wrap
+
+
 class BrowserManager:
     """The window Jarvis works in - the same one you are looking at.
 
@@ -205,6 +238,7 @@ class BrowserManager:
             await self._live.close()
             self._page = None
 
+    @_speakable('Opening that page')
     async def open_url(self, url: str) -> dict[str, str]:
         """Navigate the tab the user is looking at. Never opens a new one."""
         self._validate_url(url)
@@ -218,6 +252,7 @@ class BrowserManager:
         async with self._lock:
             return await self._page_summary(page)
 
+    @_speakable('Reading the page')
     async def read_page(self, *, max_chars: int = 12_000) -> dict[str, str | bool]:
         page = await self._get_page()
 
@@ -238,6 +273,7 @@ class BrowserManager:
                 "truncated": truncated,
             }
 
+    @_speakable('Looking at the page')
     async def inspect_page(self, *, max_chars: int = 8_000) -> dict[str, object]:
         """Return readable text plus a compact inventory of interactive elements."""
         page = await self._get_page()
@@ -277,6 +313,7 @@ class BrowserManager:
                 "elements": elements,
             }
 
+    @_speakable('Going back')
     async def go_back(self) -> dict[str, str]:
         page = await self._get_page()
 
@@ -289,6 +326,7 @@ class BrowserManager:
             except Exception as exc:
                 raise BrowserError(f"I could not go back: {exc}") from exc
 
+    @_speakable('Taking a screenshot')
     async def take_screenshot(self) -> dict[str, str | int | bool]:
         page = await self._get_page()
 
@@ -303,6 +341,7 @@ class BrowserManager:
             except Exception as exc:
                 raise BrowserError(f"I could not capture the page: {exc}") from exc
 
+    @_speakable('That click')
     async def click(self, target: str) -> dict[str, str]:
         page = await self._get_page()
 
@@ -322,6 +361,7 @@ class BrowserManager:
 
             return await self._page_summary(page)
 
+    @_speakable('Typing that')
     async def type_text(self, target: str, text: str) -> dict[str, str]:
         page = await self._get_page()
 
@@ -334,6 +374,7 @@ class BrowserManager:
 
             return {"target": target, "url": page.url}
 
+    @_speakable('Scrolling')
     async def scroll(self, direction: Literal["up", "down"]) -> dict[str, str]:
         if direction not in {"up", "down"}:
             raise BrowserError("Scroll direction must be 'up' or 'down'.")
@@ -345,6 +386,7 @@ class BrowserManager:
             await page.mouse.wheel(0, amount)
             return {"direction": direction, "url": page.url}
 
+    @_speakable('That key')
     async def press_key(self, key: str) -> dict[str, str]:
         allowed_keys = {
             "Enter",

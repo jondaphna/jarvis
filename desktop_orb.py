@@ -23,6 +23,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import urllib.request
 import webbrowser
 from pathlib import Path
@@ -44,6 +45,11 @@ CANVAS = DIAMETER + MARGIN * 2
 #: from the middle so a drag never lands on it by accident.
 CLOSE_CENTRE = (CANVAS - 13, 13)
 CLOSE_RADIUS = 10
+
+#: How far the mouse may wander during a click before it counts as a drag.
+#: Without this, a single pixel of movement - which is most clicks, on most
+#: hands - was treated as a drag, and clicking the orb did nothing at all.
+DRAG_SLOP = 5
 
 ACCENT = QColor(0, 212, 255)
 DIM = QColor(90, 100, 125)
@@ -84,6 +90,7 @@ class Orb(QWidget):
         self._online = False
         self._opening = False
         self._chrome: subprocess.Popen | None = None
+        self._probing = False
         self._hover_close = False
 
         self.setWindowFlags(
@@ -125,15 +132,19 @@ class Orb(QWidget):
     # ------------------------------------------------------------------ #
 
     def _restore_position(self) -> None:
-        screen = QApplication.primaryScreen().availableGeometry()
-        default = QPoint(screen.right() - CANVAS - 28,
-                         screen.bottom() - CANVAS - 60)
+        primary = QApplication.primaryScreen().availableGeometry()
+        default = QPoint(primary.right() - CANVAS - 28,
+                         primary.bottom() - CANVAS - 60)
         try:
             saved = json.loads(_state_file().read_text(encoding="utf-8"))
             point = QPoint(int(saved["x"]), int(saved["y"]))
-            # A monitor that has since been unplugged would strand it offscreen.
-            if screen.contains(QPoint(point.x() + CANVAS // 2,
-                                      point.y() + CANVAS // 2)):
+            middle = QPoint(point.x() + CANVAS // 2, point.y() + CANVAS // 2)
+            # Every screen, not just the primary one. Checking only the primary
+            # rejected any position on a second monitor, so the orb jumped back
+            # across the desk on every launch. Still guards against a monitor
+            # that has since been unplugged.
+            if any(s.availableGeometry().contains(middle)
+                   for s in QApplication.screens()):
                 self.move(point)
                 return
         except Exception:
@@ -152,16 +163,32 @@ class Orb(QWidget):
     # ------------------------------------------------------------------ #
 
     def _check_online(self) -> None:
-        was = self._online
+        """Ask in the background whether the web app is up.
+
+        On the GUI thread this blocked for up to a second and a half at a time,
+        which froze the animation and made the orb impossible to drag during a
+        cold start - exactly when you are most likely to be looking at it.
+        """
+        if self._probing:
+            return
+        self._probing = True
+        threading.Thread(target=self._probe_now, daemon=True,
+                         name="jarvis-orb-probe").start()
+
+    def _probe_now(self) -> None:
         try:
             opener = urllib.request.build_opener(
                 urllib.request.ProxyHandler({}))       # never via a proxy
             with opener.open(WEB_URL, timeout=1.5):
-                self._online = True
+                online = True
         except Exception:
-            self._online = False
-        if was != self._online:
-            self.update()
+            online = False
+        finally:
+            self._probing = False
+        if online != self._online:
+            self._online = online
+            # Qt insists repainting happens on the GUI thread.
+            QTimer.singleShot(0, self.update)
 
     def _tick(self) -> None:
         self._phase += 0.05
@@ -288,8 +315,13 @@ class Orb(QWidget):
             self.update()
         if self._drag_from is None:
             return
-        self.move(event.globalPosition().toPoint() - self._drag_from)
-        self._dragged = True
+        moved = event.globalPosition().toPoint() - self._drag_from
+        if not self._dragged:
+            drift = (moved - self.frameGeometry().topLeft())
+            if abs(drift.x()) < DRAG_SLOP and abs(drift.y()) < DRAG_SLOP:
+                return                       # still a click, not a drag yet
+            self._dragged = True
+        self.move(moved)
 
     def mouseReleaseEvent(self, event) -> None:   # noqa: N802
         if self._drag_from is not None and self._dragged:
@@ -348,6 +380,8 @@ class Orb(QWidget):
 
     def open_jarvis(self) -> None:
         """Start whatever isn't running, then open the window and connect."""
+        if self._opening:
+            return          # already starting; a second click would double it
         if not self._online:
             self.start_everything()
             # The web server takes a few seconds to compile on a cold start.
@@ -432,9 +466,21 @@ class Orb(QWidget):
         way of the drag area, and nothing here loses work - the conversation is
         already written to the database as it happens.
         """
-        if self._chrome is not None:
-            self._kill_tree(self._chrome.pid)
-            self._chrome = None
+        # Not by PID. Launching Chrome usually hands the URL to the instance
+        # already running and exits immediately, so that PID is long gone and
+        # killing it closes nothing. The window is identified by the profile it
+        # was started with instead.
+        self._chrome = None
+        if sys.platform == "win32":
+            try:
+                subprocess.run(
+                    ["powershell", "-NoProfile", "-Command",
+                     "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" "
+                     "| Where-Object { $_.CommandLine -like '*--app=http://localhost:3000*' } "
+                     "| ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"],
+                    capture_output=True, timeout=15, check=False)
+            except Exception:
+                pass
 
         if sys.platform == "win32":
             # Kills the console windows and everything underneath them - the

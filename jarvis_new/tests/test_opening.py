@@ -132,6 +132,9 @@ class TestOneWindowReused:
 
         class FakeContext:
             pages = [existing]
+            # A real context reports whether its browser is still connected;
+            # attach() checks that before reusing one, so the fake needs it.
+            browser = type("B", (), {"is_connected": staticmethod(lambda: True)})()
 
             async def new_page(self):
                 raise AssertionError("it must reuse the tab, not open another")

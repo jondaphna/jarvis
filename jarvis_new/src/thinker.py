@@ -215,12 +215,20 @@ class Thinker:
         back to the plain call rather than failing over a nicety.
         """
         client = self.client()
+        errors = _sdk_errors()
         try:
             return client.beta.messages.create(
                 betas=["server-side-fallback-2026-07-01"],
                 fallbacks="default",
                 **request)
+        except errors.status:
+            # A real answer from the API - rejected key, rate limit, outage.
+            # Retrying the whole request on the plain path would double the
+            # latency and the rate-limit pressure to arrive at the same
+            # failure. Let it through to be explained.
+            raise
         except Exception:
+            # Only the beta itself being unavailable gets a second attempt.
             return client.messages.create(**request)
 
     @staticmethod

@@ -16,6 +16,15 @@ import inspect
 
 import agent
 import pytest
+
+class LiveContext:
+    """A context that reports itself connected, like a real one."""
+
+    def __init__(self, pages):
+        self.pages = pages
+        self.browser = type("B", (), {"is_connected": staticmethod(lambda: True)})()
+
+
 from google.genai import types as genai_types
 
 
@@ -81,10 +90,59 @@ class TestTheToolsSurviveToo:
 
         made = Reopened()
 
-        class Context:
-            pages = [Closed()]
+        class Context(LiveContext):
             async def new_page(self): return made
 
         window = live_browser.LiveBrowser()
-        window._context = Context()
+        window._context = Context([Closed()])
         assert await window.page() is made, "a closed tab should be replaced"
+
+
+class TestOneClosedWindowDoesNotBreakEverything:
+    """The second way "it stopped being able to do anything" happened.
+
+    Closing the browser window leaves a dead connection behind. Every later
+    tool call then failed with a raw Playwright error, which escapes the
+    handler in BrowserTools and surfaces as a crash rather than a sentence -
+    and the cached connection was never cleared, so it stayed broken for the
+    rest of the conversation.
+    """
+
+    class DeadWindow:
+        async def page(self):
+            raise Exception("Target page, context or browser has been closed")
+
+        async def goto(self, url, **kwargs):
+            raise Exception("Target page, context or browser has been closed")
+
+        async def attach(self): ...
+        async def close(self): ...
+
+    @pytest.mark.parametrize("call", ["read_page", "inspect_page", "go_back",
+                                      "scroll", "press_key", "take_screenshot"])
+    async def test_it_says_so_instead_of_crashing(self, call) -> None:
+        from browser import BrowserError, BrowserManager
+
+        manager = BrowserManager(live=self.DeadWindow())
+        argument = {"scroll": ("down",), "press_key": ("Enter",)}.get(call, ())
+        with pytest.raises(BrowserError, match="closed"):
+            await getattr(manager, call)(*argument)
+
+    async def test_clicking_and_typing_too(self) -> None:
+        from browser import BrowserError, BrowserManager
+
+        manager = BrowserManager(live=self.DeadWindow())
+        with pytest.raises(BrowserError, match="closed"):
+            await manager.click("Play")
+        with pytest.raises(BrowserError, match="closed"):
+            await manager.type_text("Search", "daft punk")
+
+    def test_a_dead_connection_is_dropped_rather_than_reused(self) -> None:
+        """Holding on to it is what made the breakage permanent."""
+        import inspect
+
+        from live_browser import LiveBrowser
+
+        source = inspect.getsource(LiveBrowser.attach)
+        assert "self._usable" in source
+        assert "self._context = None" in source
