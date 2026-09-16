@@ -166,6 +166,47 @@ def jarvis_profile_dir() -> Path:
     return root
 
 
+#: Words a person adds when naming a control out loud that the page never puts
+#: in its label. "The play button" is how you say it; "Play Get Lucky by Daft
+#: Punk" is how Spotify labels it, and strict matching between those is why the
+#: song never started.
+_CONTROL_NOUNS = ("button", "link", "icon", "control", "field", "box", "menu",
+                  "tab", "option", "item", "thing")
+_LEADING_WORDS = ("the ", "a ", "an ", "that ", "this ", "my ")
+
+
+def target_variants(target: str) -> list[str]:
+    """The ways to look for this control, most confident first.
+
+    Exactly as said comes first and always wins where it matches; the looser
+    forms exist only so that the natural way to say something isn't the one
+    thing that fails. Never loosens a target down to nothing - "button" on its
+    own stays "button", because matching every button on the page is worse
+    than matching none.
+    """
+    original = " ".join((target or "").split())
+    if not original:
+        return []
+
+    variants = [original]
+    lowered = original.lower()
+
+    stripped = lowered
+    for word in _LEADING_WORDS:
+        if stripped.startswith(word):
+            stripped = stripped[len(word):].strip()
+            break
+
+    for noun in _CONTROL_NOUNS:
+        if stripped.endswith(" " + noun):
+            stripped = stripped[: -len(noun)].strip()
+            break
+
+    if stripped and stripped != lowered:
+        variants.append(stripped)
+    return list(dict.fromkeys(v for v in variants if v.strip()))
+
+
 def _speakable(what: str):
     """Turn any browser failure into something Jarvis can say out loud.
 
@@ -419,36 +460,71 @@ class BrowserManager:
         return {"url": page.url, "title": await page.title()}
 
     async def _resolve_target(self, page: Page, target: str) -> Locator:
-        for role in ("button", "link", "tab", "menuitem", "checkbox", "radio"):
-            locator = page.get_by_role(role, name=target, exact=True)
+        """The control the user meant, matched as loosely as it safely can be.
+
+        Tried in order of confidence: the words as given, then the same words
+        with the padding a person adds when speaking taken off. Exact always
+        wins where there is one - loosening is a fallback, not a replacement.
+        """
+        for wanted in target_variants(target):
+            for role in ("button", "link", "tab", "menuitem", "checkbox", "radio"):
+                locator = page.get_by_role(role, name=wanted, exact=True)
+                if await locator.count():
+                    return locator.first
+
+                locator = page.get_by_role(role, name=wanted, exact=False)
+                if await locator.count():
+                    return locator.first
+
+            locator = page.get_by_text(wanted, exact=True)
             if await locator.count():
                 return locator.first
 
-            locator = page.get_by_role(role, name=target, exact=False)
+            locator = page.get_by_text(wanted, exact=False)
             if await locator.count():
                 return locator.first
 
-        locator = page.get_by_text(target, exact=True)
-        if await locator.count():
-            return locator.first
+        raise BrowserError(await self._nothing_named(page, target))
 
-        locator = page.get_by_text(target, exact=False)
-        if await locator.count():
-            return locator.first
+    async def _nothing_named(self, page: Page, target: str) -> str:
+        """Why the click failed, and what it could have clicked instead.
 
-        raise BrowserError(f"I could not find a visible control named {target!r}.")
+        A bare "I could not find it" leaves the model guessing blind, and what
+        it guesses next is usually worse. Naming what IS on the page lets it
+        pick something and carry on.
+        """
+        message = f"There's no control named {target!r} on this page."
+        try:
+            names: list[str] = []
+            for role in ("button", "link"):
+                for handle in await page.get_by_role(role).all():
+                    label = ((await handle.get_attribute("aria-label"))
+                             or (await handle.inner_text()) or "").strip()
+                    label = " ".join(label.split())[:40]
+                    if label and label not in names:
+                        names.append(label)
+                    if len(names) >= 12:
+                        break
+                if len(names) >= 12:
+                    break
+        except Exception:
+            return message
+        if not names:
+            return message
+        return message + " What's there: " + ", ".join(repr(n) for n in names)
 
     async def _resolve_textbox(self, page: Page, target: str) -> Locator:
-        for locator in (
-            page.get_by_role("textbox", name=target, exact=True),
-            page.get_by_role("textbox", name=target, exact=False),
-            page.get_by_label(target, exact=True),
-            page.get_by_label(target, exact=False),
-            page.get_by_placeholder(target, exact=True),
-            page.get_by_placeholder(target, exact=False),
-        ):
-            if await locator.count():
-                return locator.first
+        for wanted in target_variants(target):
+            for locator in (
+                page.get_by_role("textbox", name=wanted, exact=True),
+                page.get_by_role("textbox", name=wanted, exact=False),
+                page.get_by_label(wanted, exact=True),
+                page.get_by_label(wanted, exact=False),
+                page.get_by_placeholder(wanted, exact=True),
+                page.get_by_placeholder(wanted, exact=False),
+            ):
+                if await locator.count():
+                    return locator.first
 
         normalized_target = target.casefold()
         if any(

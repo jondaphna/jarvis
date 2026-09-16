@@ -102,3 +102,46 @@ class TestBrowserProfile:
         monkeypatch.setattr(chrome_finder, "user_data_dir", lambda: None)
         assert chrome_finder.preferred_profile() == "Default"
         assert chrome_finder.list_profiles() == []
+
+
+class TestItUnderstandsHowPeopleActuallySpeak:
+    """What reaches `site_url` is whatever the model passed through, and the
+    model passes through what was said. "Open my Spotify" used to come back as
+    "that doesn't look like a website" - for the single most ordinary request
+    there is."""
+
+    @pytest.mark.parametrize("said", [
+        "spotify", "my spotify", "open my spotify", "Open my Spotify",
+        "go to spotify", "open up spotify", "launch spotify",
+        "pull up my spotify", "spotify please",
+    ])
+    def test_every_way_of_asking_for_spotify_works(self, said) -> None:
+        assert launcher.site_url(said) == "https://open.spotify.com", said
+
+    @pytest.mark.parametrize("said,expected", [
+        ("open netflix", "https://www.netflix.com"),
+        ("go to youtube", "https://www.youtube.com"),
+        ("my email", "https://mail.google.com"),
+        ("the bbc", "https://www.bbc.co.uk"),
+        ("open my gmail", "https://mail.google.com"),
+    ])
+    def test_the_sites_he_asks_for(self, said, expected) -> None:
+        assert launcher.site_url(said) == expected
+
+    def test_a_real_url_still_passes_straight_through(self) -> None:
+        assert launcher.site_url("https://example.com/thing") == \
+            "https://example.com/thing"
+        assert launcher.site_url("bbc.co.uk") == "https://bbc.co.uk"
+
+    def test_a_site_it_does_not_know_is_searched_for_rather_than_refused(self) -> None:
+        """"Open Shopify" answered "that doesn't look like a website". Landing
+        on a search for it is a far better wrong answer than refusing."""
+        found = launcher.site_url("shopify")
+        assert found and "shopify" in found
+
+    def test_something_that_is_plainly_not_a_website_is_still_refused(self) -> None:
+        """Otherwise "open the window" opens a web search for 'the window',
+        when what was meant was a program or a real window."""
+        for said in ("", "   ", "the window", "task manager",
+                     "my printer settings"):
+            assert launcher.site_url(said) is None, said

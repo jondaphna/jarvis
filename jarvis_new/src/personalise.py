@@ -38,11 +38,21 @@ DEFAULT_WAKE_REPLY = "Hey - what's up? How can I help?"
 #: the terminal JARVIS it never matches rules locally. Every command written in
 #: the settings panel was therefore invisible to the thing meant to obey it.
 _RULE_SHAPES = {
-    "reply": ('- When they say "{trigger}", answer with exactly this and '
-              'nothing else: "{response}"'),
-    "run": ('- When they say "{trigger}", treat it as if they had said: '
-            '"{response}" - then do it, immediately.'),
+    "reply": '- When {when}, answer with exactly this and nothing else: "{response}"',
+    "run": ('- When {when}, treat it as if they had said: "{response}" - then '
+            'do it, immediately.'),
     "instruct": "- {response}",
+}
+
+#: How a command matches is half of what it does, and it used to be invisible:
+#: an exact rule and a contains rule read identically, so a short trigger like
+#: "hey" fired on every sentence containing the word while one meant to catch a
+#: passing mention only fired on the whole phrase. Either way it does something
+#: you did not ask for, which reads as it ignoring you.
+_RULE_WHEN = {
+    "exact": 'they say "{trigger}" on its own, with nothing else in the sentence',
+    "starts": 'a sentence starts with "{trigger}"',
+    "contains": 'they say "{trigger}" anywhere in a sentence',
 }
 
 
@@ -106,11 +116,15 @@ def _setting(settings: Any, key: str, default: str = "") -> str:
         return default
 
 
-def rule_lines(rules: Any) -> list[str]:
-    """Every enabled custom command, written as an instruction to follow.
+def rule_lines(rules: Any, person: str | None = None) -> list[str]:
+    """Every custom command that applies here, written as an instruction.
 
     All three kinds, regardless of which one the panel happened to create.
     Guessing which kinds matter is how the last set of commands went missing.
+
+    Rules scoped to somebody else are left out: that is the entire point of
+    being able to scope one, and applying your brother's rules to you is a
+    command firing when you did not ask for it.
     """
     if rules is None:
         return []
@@ -123,19 +137,29 @@ def rule_lines(rules: Any) -> list[str]:
     for rule in everything:
         if not getattr(rule, "enabled", True):
             continue
+        # Who it is for. The voice agent does not know who is speaking, so an
+        # unscoped call gets only the rules meant for everybody - your
+        # brother's rules firing on your sentences is a command going off
+        # when you did not ask for it.
+        scope = str(getattr(rule, "scope", "*") or "*")
+        if scope != "*" and scope.strip().lower() != (person or "").strip().lower():
+            continue
         response = str(getattr(rule, "response", "") or "").strip()
         if not response:
             continue
         trigger = str(getattr(rule, "trigger", "") or "").strip()
         kind = str(getattr(rule, "kind", "reply") or "reply")
+        match = str(getattr(rule, "match", "contains") or "contains")
         shape = _RULE_SHAPES.get(kind, _RULE_SHAPES["instruct"])
         if not trigger and kind != "instruct":
             shape = _RULE_SHAPES["instruct"]
-        lines.append(shape.format(trigger=trigger, response=response))
+        when = _RULE_WHEN.get(match, _RULE_WHEN["contains"]).format(trigger=trigger)
+        lines.append(shape.format(response=response, when=when))
     return lines
 
 
-def your_orders(settings: Any = None, rules: Any = None) -> str:
+def your_orders(settings: Any = None, rules: Any = None,
+                person: str | None = None) -> str:
     """Everything the user wrote themselves, as one block that outranks the rest.
 
     Position and wording are both load-bearing. This goes at the very top,
@@ -148,7 +172,7 @@ def your_orders(settings: Any = None, rules: Any = None) -> str:
     """
     standing = _setting(settings, "persona.instructions")
     forbidden = _setting(settings, "persona.never")
-    commands = rule_lines(rules)
+    commands = rule_lines(rules, person)
 
     if not (standing or forbidden or commands):
         return ""

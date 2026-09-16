@@ -33,6 +33,9 @@ WINDOWS = sys.platform == "win32"
 #: Sites people say by name. The value is what to open.
 SITES = {
     "youtube": "https://www.youtube.com",
+    "email": "https://mail.google.com",
+    "inbox": "https://mail.google.com",
+    "bbc": "https://www.bbc.co.uk",
     "netflix": "https://www.netflix.com",
     "spotify": "https://open.spotify.com",
     "google": "https://www.google.com",
@@ -201,20 +204,70 @@ def open_in_browser(url: str) -> str:
     return "default browser"
 
 
+#: Verbs and padding the model passes straight through from what was said.
+#: "Open my Spotify" used to come back as "that doesn't look like a website" -
+#: for the most ordinary request there is - because the whole phrase was being
+#: looked up rather than the site inside it.
+_SPOKEN_PREFIXES = (
+    "open up ", "open ", "go to ", "go on ", "pull up ", "bring up ",
+    "launch ", "start ", "show me ", "take me to ", "load ", "visit ",
+    "my ", "the ", "a ",
+)
+_SPOKEN_SUFFIXES = (" please", " for me", " now", " website", " site",
+                    " dot com", " page", " up")
+
+
+#: Everyday words that are things on the computer, not brands. Without these
+#: "close the window" would open a web search for the word "window", which is
+#: a worse failure than saying it isn't a website.
+_NOT_SITES = frozenset({
+    "window", "windows", "folder", "file", "files", "settings", "setting",
+    "volume", "sound", "computer", "screen", "desktop", "program", "programs",
+    "app", "apps", "application", "printer", "terminal", "console", "camera",
+    "microphone", "mic", "speaker", "speakers", "bluetooth", "wifi", "menu",
+    "taskbar", "clipboard", "recycle", "bin", "trash", "everything", "this",
+    "that", "it", "one", "thing", "something", "anything", "here", "there",
+})
+
+
+def _spoken_name(name: str) -> str:
+    """What was said, with the speaking taken off."""
+    wanted = " ".join((name or "").strip().lower().split())
+    changed = True
+    while changed:                             # "open up my spotify"
+        changed = False
+        for prefix in _SPOKEN_PREFIXES:
+            if wanted.startswith(prefix):
+                wanted, changed = wanted[len(prefix):].strip(), True
+                break
+    for suffix in _SPOKEN_SUFFIXES:
+        if wanted.endswith(suffix):
+            wanted = wanted[: -len(suffix)].strip()
+            break
+    return wanted.strip(" ,.!?")
+
+
 def site_url(name: str) -> str | None:
     """Turn what they said into a URL, if it looks like a website at all."""
-    wanted = (name or "").strip().lower()
-    wanted = wanted.removeprefix("my ").removeprefix("the ")
+    raw = (name or "").strip()
+    if raw.lower().startswith(("http://", "https://")):
+        return raw
+    wanted = _spoken_name(raw)
     if not wanted:
         return None
-    if wanted.startswith(("http://", "https://")):
-        return wanted
     if wanted in SITES:
         return SITES[wanted]
     # "netflix.com", "example.co.uk/thing"
     first = wanted.split("/")[0]
     if "." in first and " " not in first:
         return "https://" + wanted
+
+    # A single unknown word is usually a brand - "shopify", "canva", "notion".
+    # Searching for it lands them somewhere useful, which is a far better
+    # wrong answer than refusing outright. Guessing brand.com is not worth it:
+    # one typo takes them to whoever squatted the domain.
+    if wanted.isalnum() and len(wanted) > 2 and wanted not in _NOT_SITES:
+        return search_url("google", wanted)
     return None
 
 

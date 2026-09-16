@@ -313,3 +313,69 @@ class TestTheWatcherStopsWhenTheCallDoes:
         import agent
 
         assert "_watch_for_edits(assistant, ctx)" in inspect.getsource(agent.my_agent)
+
+
+class TestACommandFiresWhenYouMeantItTo:
+    """How a command matches is half of what it does, and it was invisible.
+
+    An "exact" rule and a "contains" rule produced the same line in the prompt,
+    so a rule with a short trigger - "hey", "deploy" - fired on any sentence
+    containing the word, and a rule meant to catch a passing mention only fired
+    on the whole phrase. Either way it does something you did not ask for,
+    which reads as it ignoring you.
+    """
+
+    def line_for(self, book, **kwargs) -> str:
+        from jarvis.core.rules import Rule
+
+        book.add(Rule(**kwargs))
+        return "\n".join(personalise.rule_lines(book))
+
+    def test_an_exact_rule_says_it_must_be_the_whole_thing(self, book) -> None:
+        line = self.line_for(book, trigger="hey", response="Yes?",
+                             kind=KIND_REPLY, match="exact")
+        assert "only" in line.lower() or "nothing else" in line.lower()
+        assert "exactly that" in line.lower() or "on its own" in line.lower()
+
+    def test_a_contains_rule_says_anywhere_in_the_sentence(self, book) -> None:
+        line = self.line_for(book, trigger="deploy", response="Right away.",
+                             kind=KIND_REPLY, match="contains")
+        assert "anywhere" in line.lower() or "mention" in line.lower()
+
+    def test_a_starts_with_rule_says_so(self, book) -> None:
+        line = self.line_for(book, trigger="jarvis", response="Sir?",
+                             kind=KIND_REPLY, match="starts")
+        assert "start" in line.lower() or "begin" in line.lower()
+
+    def test_two_rules_that_match_differently_read_differently(self, book) -> None:
+        from jarvis.core.rules import Rule
+
+        book.add(Rule(trigger="hey", response="Yes?", match="exact"))
+        book.add(Rule(trigger="deploy", response="Right away.", match="contains"))
+        lines = personalise.rule_lines(book)
+        assert len(lines) == 2
+        assert lines[0] != lines[1], "the two matching modes read identically"
+
+
+class TestOtherPeoplesRulesStayTheirs:
+    """Rules can be scoped to one person - that is the point of scoping. All
+    of them were being applied to whoever was talking."""
+
+    def test_a_rule_scoped_to_someone_else_is_left_out(self, book) -> None:
+        from jarvis.core.rules import Rule
+
+        book.add(Rule(trigger="my homework", response="I'll help with that",
+                      scope="little brother"))
+        assert personalise.rule_lines(book) == []
+
+    def test_a_rule_for_everyone_still_applies(self, book) -> None:
+        from jarvis.core.rules import Rule
+
+        book.add(Rule(trigger="status report", response="All nominal."))
+        assert len(personalise.rule_lines(book)) == 1
+
+    def test_a_rule_scoped_to_you_applies_to_you(self, book) -> None:
+        from jarvis.core.rules import Rule
+
+        book.add(Rule(trigger="my inbox", response="Opening it", scope="jonathan"))
+        assert len(personalise.rule_lines(book, person="Jonathan")) == 1

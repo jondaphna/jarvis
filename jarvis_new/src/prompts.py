@@ -74,9 +74,13 @@ AGENT_INSTRUCTIONS = textwrap.dedent(
     - "Play X on Spotify", "find Y on Netflix", "search YouTube for Z", "google
       something" - use search_on_site. It lands on the results, not the front
       page.
-    - Then finish the job. If starting the thing needs a click - a play button,
-      a result in a list - use inspect_page to see what is on screen, then
-      click it. Landing on a search page is not the same as playing the song.
+    - Then finish the job.
+      Landing on a search page is not the same as playing the song.
+      Use inspect_page to see what is actually on screen, then click.
+    - Click things by their own name, not by what kind of control they are.
+      The page calls it "Play Get Lucky by Daft Punk", so click "Get Lucky" or
+      "Play" - not "the play button". If a click fails it tells you what IS on
+      the page; pick from that list rather than guessing again.
     - Programs on the computer, not websites - Word, Discord, Task Manager -
       use open_app.
     - read_web_page and search_the_web are for reading something to answer a
