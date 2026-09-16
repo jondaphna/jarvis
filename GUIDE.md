@@ -33,6 +33,7 @@ it the other way round and the page connects to nothing.
 
 | Button | What it does |
 |---|---|
+| **`butler-settings.bat`** | **Settings, guaranteed.** Opens them directly — nothing can cover it. |
 | **`butler-doctor.bat`** | **Something's wrong?** Checks everything and says what. Start here. |
 | **`butler-check.bat`** | Are my keys still valid? Asks Google and LiveKit directly. |
 | **`butler-keys.bat`** | Re-enter your keys. |
@@ -72,7 +73,29 @@ you'll watch it browse.
 
 ## 3. The settings panel
 
-The **gear button**, top right of the web app. Five tabs.
+**Five ways in, because a floating button can always end up underneath
+something:**
+
+1. **`butler-settings.bat`** — the one that cannot fail
+2. **http://localhost:3000/settings** — its own page
+3. The **gear button**, top right
+4. **Ctrl+Shift+S**
+5. **Right-click the orb** → Settings and instructions
+
+It opens on **Rules**, which is where you tell it what to always do.
+
+Seven tabs.
+
+### Rules — the one you asked for
+Two boxes, in your words, read at the start of every conversation:
+
+- **Standing instructions** — anything it should always know or always do.
+  *"My business is video production." "Keep answers short." "You can open apps
+  without asking." "Always check my calendar before suggesting a time."*
+- **Never do these** — absolute limits. It refuses rather than looking for a
+  way around them.
+
+Plus which Chrome profile is yours.
 
 ### Permissions
 A switch for each thing Jarvis can do — opening sites, clicking and typing,
@@ -80,7 +103,7 @@ opening apps, volume, memory, power. Switching one off **removes those tools**
 rather than asking it to behave, so there is nothing to talk it out of. Power
 actions start off.
 
-### Rules
+### Rules (detail)
 **The important one.** Written in your words, read at the start of every
 conversation.
 
@@ -247,6 +270,18 @@ Your keys, memory, tasks and settings live **outside the repo**, in
 `%APPDATA%\JARVIS`. Updating or restoring the code never touches them.
 
 ---
+
+## 5b. It used to go quiet after a while — fixed
+
+A Gemini Live session has a time limit. When it ran out the server said so, the
+session closed, and Jarvis lost every tool mid-conversation with nothing on
+screen to explain it. It now asks for session resumption, so a dropped session
+comes back and carries on, and compresses its context so a long conversation
+cannot fill up.
+
+Closing the browser window used to do the same thing by a different route — the
+dead connection was kept and every later tool failed. It now notices, drops it,
+and opens a new window when you next ask for something.
 
 ## 6. When something goes wrong
 

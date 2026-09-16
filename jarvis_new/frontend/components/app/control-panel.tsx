@@ -288,7 +288,8 @@ function PermissionsTab({ state, reload }: { state: State; reload: () => void })
     <div className="space-y-4">
       <p className="text-muted-foreground text-sm">
         Switch something off and the tools behind it are taken away entirely — Jarvis isn&apos;t
-        asked to behave, it simply has no way to do it.
+        asked to behave, it simply has no way to do it. This takes effect when the next conversation
+        starts; a call already running keeps what it began with.
       </p>
 
       <div className="space-y-2">
