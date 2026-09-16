@@ -11,3 +11,4 @@
 working	14e27d0	Voice works end to end - console and web. The version you confirmed.
 latest	550c12f	Adds memory, the wake phrase, the orb, the settings panel and the guide.
 tonight	a254500	Session survives long conversations; settings reachable five ways; reasoning brain; security pass.
+free	a2848ec	Free by default - nothing costs money until you switch Money on. Teaches once and remembers: the Learned tab.

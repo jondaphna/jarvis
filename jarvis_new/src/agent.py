@@ -20,7 +20,7 @@ from learning import Lessons
 from os_tools import OSTools
 from permissions import filter_tools
 from permissions import summary as permission_summary
-from personalise import extra_instructions, load_rules, load_settings
+from personalise import assemble, fingerprint, load_rules, load_settings
 from prompts import AGENT_INSTRUCTIONS
 from thinker import Thinker
 from tools import BrowserTools
@@ -55,6 +55,7 @@ class Assistant(Agent):
                 "Give Jarvis's brief, polite British-English farewell, then end the call."
             ),
         )
+        self._prompt_fingerprint = fingerprint(self._settings, self._rules)
         super().__init__(
             # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
             # See all available models at https://docs.livekit.io/agents/models/llm/
@@ -94,15 +95,12 @@ class Assistant(Agent):
             # 3. Add `from livekit.plugins import openai` to the top of this file
             # 4. Replace the llm argument with:
             #     llm=openai.realtime.RealtimeModel(voice="marin")
-            instructions="\n\n".join(part for part in (
-                AGENT_INSTRUCTIONS,
-                extra_instructions(self.memory, self._settings, self._rules),
-                # Their own lessons, ahead of the permission notes: this is
-                # the block that makes a repeated job land first time.
-                self.lessons.block(),
-                self.lessons.guidance(),
-                permission_summary(self._settings),
-            ) if part.strip()),
+            # Their own instructions first, the template second, and a
+            # reminder of theirs last. Order is not decoration here: the
+            # commands written in the settings panel were being ignored, and
+            # one reason was that they arrived buried in the middle of two
+            # thousand tokens of somebody else's personality.
+            instructions=self._instructions(),
             # Anything switched off is removed here rather than refused later.
             # A tool the model was never given is one it cannot try, announce
             # it is trying, or be talked into.
@@ -115,6 +113,47 @@ class Assistant(Agent):
                 *self._end_call_tool.tools,
             ], self._settings),
         )
+
+    def _instructions(self) -> str:
+        """The whole system prompt, rebuilt from what is on disk right now."""
+        return assemble(
+            AGENT_INSTRUCTIONS, self.memory, self._settings, self._rules,
+            extra=(
+                # Their own lessons, ahead of the permission notes: this is
+                # the block that makes a repeated job land first time.
+                self.lessons.block(),
+                self.lessons.guidance(),
+                permission_summary(self._settings),
+            ))
+
+    async def reload_rules(self) -> bool:
+        """Pick up an edit to the settings panel without restarting.
+
+        Why this exists: "I write the commands and he just ignores them" is
+        indistinguishable, from the outside, from "the running agent has never
+        seen them". The instructions are fixed when a call starts, so anything
+        typed during a call used to do nothing until the next one - which is
+        exactly what being ignored looks like.
+
+        Returns True when something actually changed. Nothing here may raise:
+        a settings file half-written by the panel must not end a conversation.
+        """
+        try:
+            settings = load_settings()
+            rules = load_rules(settings)
+            current = fingerprint(settings, rules)
+        except Exception:
+            return False
+        if current == self._prompt_fingerprint:
+            return False
+        self._settings, self._rules = settings, rules
+        self._prompt_fingerprint = current
+        try:
+            await self.update_instructions(self._instructions())
+        except Exception:
+            return False
+        print("  (picked up your new instructions)")
+        return True
 
 
 server = AgentServer()
@@ -183,9 +222,11 @@ async def my_agent(ctx: JobContext):
 
     _record_conversation(session, memory, lessons)
 
+    assistant = Assistant(browser, memory, lessons)
+
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
-        agent=Assistant(browser, memory, lessons),
+        agent=assistant,
         room=ctx.room,
         room_options=room_io.RoomOptions(
             video_input=True,
@@ -197,8 +238,41 @@ async def my_agent(ctx: JobContext):
         ),
     )
 
+    # Watch for edits to the settings panel while the call is running.
+    _watch_for_edits(assistant)
+
     # Join the room and connect to the user
     await ctx.connect()
+
+
+#: How often to look for a change to your instructions. Cheap - it hashes what
+#: the model would be told and compares, so an idle check does no work at all.
+RELOAD_SECONDS = 4.0
+
+
+def _watch_for_edits(assistant: Assistant) -> None:
+    """Keep the running call in step with the settings panel.
+
+    Without this, typing a command during a conversation does nothing until the
+    next one, which from the outside is identical to the command being ignored.
+    The task is cancelled with the session and can never raise into it.
+    """
+    import asyncio
+
+    async def loop() -> None:
+        while True:
+            await asyncio.sleep(RELOAD_SECONDS)
+            try:
+                await assistant.reload_rules()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+
+    task = asyncio.ensure_future(loop())
+    # Held so the loop isn't garbage-collected mid-flight; asyncio only keeps
+    # a weak reference to a running task.
+    assistant._reload_task = task
 
 
 def _record_conversation(session: AgentSession, memory: JarvisMemory,

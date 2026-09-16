@@ -35,6 +35,7 @@ it the other way round and the page connects to nothing.
 |---|---|
 | **`butler-settings.bat`** | **Settings, guaranteed.** Opens them directly — nothing can cover it. |
 | **`butler-doctor.bat`** | **Something's wrong?** Checks everything and says what. Start here. |
+| **`butler-test.bat`** | The thorough one. Runs every test, then the doctor. About a minute. |
 | **`butler-check.bat`** | Are my keys still valid? Asks Google and LiveKit directly. |
 | **`butler-keys.bat`** | Re-enter your keys. |
 | **`butler-devices.bat`** | List microphones and speakers with their numbers. |

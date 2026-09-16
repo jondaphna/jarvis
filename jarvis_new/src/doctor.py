@@ -184,6 +184,160 @@ def check_thinking() -> None:
                  "Add a Claude key in the AI tab, or switch paid AI back off")
 
 
+def check_wiring() -> None:
+    """Are the pieces actually joined up?
+
+    Almost every real failure here has been a joint rather than a part: a
+    button running a renamed script, a settings panel calling a route the
+    service does not have, a prompt naming a tool that was consolidated away.
+    None of those raise. They present as "it just doesn't do anything".
+    """
+    import re
+
+    print("\nWiring")
+    root = HERE.parents[1]
+    panel = (root / "jarvis_new" / "frontend" / "components" / "app"
+             / "control-panel.tsx")
+
+    # -- the buttons -------------------------------------------------------- #
+    launchers = sorted(root.glob("butler-*.bat"))
+    broken = []
+    for launcher in launchers:
+        text = launcher.read_text(encoding="utf-8", errors="ignore")
+        for target in re.findall(r"(?:python|uv run)\s+(?:--\S+\s+)*"
+                                 r"([\w./\\-]+\.py)", text):
+            path = target.replace("\\", "/")
+            if not any((base / path).exists() for base in (root, root / "jarvis_new")):
+                broken.append(f"{launcher.name} runs {target}, which isn't there")
+    if broken:
+        for line in broken:
+            fail(line, "Tell me this - that button does nothing")
+    else:
+        print(OK + f"{len(launchers)} button(s), every one of them runs a real file")
+
+    # -- the orb ------------------------------------------------------------ #
+    orb = root / "desktop_orb.py"
+    if orb.exists():
+        text = orb.read_text(encoding="utf-8", errors="ignore")
+        missing = [name for name in
+                   sorted(set(re.findall(r'["\'](butler-[\w-]+\.bat)["\']', text)))
+                   if not (root / name).exists()]
+        if missing:
+            fail(f"the orb launches {', '.join(missing)}, which are missing",
+                 "Tell me this - those orb menu items do nothing")
+        else:
+            print(OK + "every orb menu item launches something real")
+
+    # -- the settings panel and the service --------------------------------- #
+    if not panel.exists():
+        print(WARN + "the settings panel source isn't here to check")
+        return
+    panel_text = panel.read_text(encoding="utf-8")
+    service = (HERE / "control_api.py").read_text(encoding="utf-8")
+    routes = {p.strip("/").split("/")[0] for p in
+              re.findall(r"api\(\s*['\"`]([^'\"`$]+)", panel_text) if p.strip("/")}
+    absent = sorted(r for r in routes if f'head == "{r}"' not in service)
+    if absent:
+        fail(f"the panel calls {', '.join(absent)}, which the service can't answer",
+             "Tell me this - those parts of the settings panel are dead")
+    else:
+        print(OK + f"{len(routes)} settings route(s), all answered")
+
+    try:
+        import control_api
+
+        state = control_api.Control().state()
+        wanted = set(re.findall(r"state\.(\w+)", panel_text)) - {"settings"}
+        gone = sorted(w for w in wanted if w not in state)
+        if gone:
+            fail(f"the panel expects {', '.join(gone)}, which isn't sent",
+                 "Tell me this - those tabs will look empty")
+        else:
+            print(OK + "the panel and the service agree on every field")
+    except Exception as exc:
+        fail(f"couldn't ask the service what it sends: {exc}", "Tell me this error")
+
+    # -- the prompt and the tools ------------------------------------------- #
+    try:
+        import permissions
+        import prompts
+
+        named = set(re.findall(r"\b(?:use |calls )([a-z_]+_[a-z_]+)\b",
+                               prompts.AGENT_INSTRUCTIONS))
+        unreal = sorted(n for n in named if n not in permissions.GOVERNED)
+        if unreal:
+            fail(f"the prompt tells it to use {', '.join(unreal)}, which don't exist",
+                 "Tell me this - it will try and fail")
+        else:
+            print(OK + f"{len(permissions.GOVERNED)} tool(s), every one named in "
+                       "the prompt is real")
+    except Exception as exc:
+        fail(f"couldn't check the prompt: {exc}", "Tell me this error")
+
+
+def check_your_rules() -> None:
+    """Your own instructions and commands, and whether they reach the model.
+
+    The bug this exists to catch: commands written in the settings panel are
+    created as "reply" rules, and for a while the voice agent rendered only
+    "instruct" rules into its prompt. Every command written in the panel was
+    invisible - which looks exactly like being ignored.
+    """
+    print("\nYour rules and commands")
+    sys.path.insert(0, str(HERE))
+    try:
+        import personalise
+
+        settings = personalise.load_settings()
+        book = personalise.load_rules(settings)
+    except Exception as exc:
+        fail(f"can't load your rules: {exc}", "Tell me this error")
+        return
+
+    standing = str((settings.get("persona.instructions", "") if settings else "") or "").strip()
+    forbidden = str((settings.get("persona.never", "") if settings else "") or "").strip()
+    try:
+        commands = [r for r in (book.all() if book else []) if r.enabled]
+    except Exception:
+        commands = []
+
+    if not (standing or forbidden or commands):
+        print(WARN + "you haven't written any rules or commands yet")
+        return
+
+    if standing:
+        print(OK + f"{len(standing.splitlines())} standing instruction(s)")
+    if forbidden:
+        print(OK + f"{len(forbidden.splitlines())} thing(s) it must never do")
+    if commands:
+        kinds: dict[str, int] = {}
+        for rule in commands:
+            kinds[rule.kind] = kinds.get(rule.kind, 0) + 1
+        print(OK + f"{len(commands)} command(s): "
+                   + ", ".join(f"{n} {k}" for k, n in sorted(kinds.items())))
+
+    block = personalise.your_orders(settings, book)
+    if not block.strip():
+        fail("you have rules but none of them reach Jarvis",
+             "Tell me this - it means everything you wrote is being ignored")
+        return
+
+    missing = [r for r in commands if r.response.strip()
+               and r.response.strip() not in block]
+    if missing:
+        fail(f"{len(missing)} command(s) never reach Jarvis",
+             "Tell me this - those commands are invisible to it")
+    else:
+        print(OK + "every rule and command reaches Jarvis, ahead of everything else")
+
+    full = personalise.assemble("TEMPLATE", None, settings, book)
+    if full.index(block) != 0:
+        fail("your rules are not first in the instructions",
+             "Tell me this - buried rules get overruled by the template")
+    else:
+        print(OK + "they are the first thing it reads, and the last thing it is reminded of")
+
+
 def check_learning() -> None:
     """What it has been taught, and whether it will reach the next call."""
     print("\nWhat you have taught it")
@@ -345,7 +499,8 @@ def check_services() -> None:
 def main() -> int:
     print("\n  Jarvis - checking everything\n" + "  " + "-" * 44)
     for check in (check_env, check_thinking, check_long_conversations,
-                  check_memory, check_learning, check_browser, check_services,
+                  check_memory, check_your_rules, check_learning,
+                  check_browser, check_wiring, check_services,
                   check_settings_routes):
         try:
             check()

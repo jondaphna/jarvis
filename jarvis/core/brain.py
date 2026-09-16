@@ -228,8 +228,7 @@ class Brain:
         # to Google's free tier, which answers questions perfectly well but
         # cannot drive tools - a degraded JARVIS beats a JARVIS that refuses to
         # start because there is no credit on an account.
-        if bool(self.settings.get("thinking.allow_paid", False)) and \
-                self.anthropic.available():
+        if self.settings.allow_paid and self.anthropic.available():
             return self.anthropic, self.model_for(tier), "claude"
 
         gemini = self.providers.get("gemini")
@@ -239,6 +238,19 @@ class Brain:
         # Nothing free is reachable. Claude with a stored key is better than
         # nothing at all, and the caller shows which brain answered.
         return self.anthropic, self.model_for(tier), "claude"
+
+    def _rescue_brain(self, tier: str) -> tuple[Any, str, str] | None:
+        """Who takes over when the local model falls over mid-turn.
+
+        Same order as `choose_brain`, minus the local one that just failed:
+        free before paid, and nothing at all rather than an unasked-for bill.
+        """
+        gemini = self.providers.get("gemini")
+        if gemini is not None and gemini.available():
+            return gemini, gemini.default_model(), "gemini-free"
+        if self.settings.allow_paid and self.anthropic.available():
+            return self.anthropic, self.model_for(tier), "claude"
+        return None
 
     def ready(self) -> bool:
         return any(provider.available() for provider in self.providers.values())
@@ -397,16 +409,18 @@ class Brain:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                # A wobbly local model shouldn't end the conversation - hand the
-                # turn to Claude and carry on. Only when you have said Claude
-                # may be used, though: a local model stumbling is not consent
-                # to start spending.
-                if (brain_label == "local" and iteration == 1
-                        and self.settings.allow_paid
-                        and self.anthropic.available()):
-                    log.warning("local model failed (%s) - falling back to Claude", exc)
-                    bus.publish(events.INFO, "Local model stumbled; using Claude.")
-                    provider, model, brain_label = self.anthropic, self.model_for(tier), "claude"
+                # A wobbly local model shouldn't end the conversation - hand
+                # the turn to another brain and carry on. Free first: a local
+                # model stumbling is not consent to start spending, so Claude
+                # is only reached once you have said it may be.
+                rescue = self._rescue_brain(tier) if (
+                    brain_label == "local" and iteration == 1) else None
+                if rescue is not None:
+                    provider, model, brain_label = rescue
+                    log.warning("local model failed (%s) - falling back to %s",
+                                exc, brain_label)
+                    bus.publish(events.INFO,
+                                f"Local model stumbled; using {brain_label}.")
                     reply.provider = brain_label
                     continue
 

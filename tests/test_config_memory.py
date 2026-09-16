@@ -43,7 +43,6 @@ class TestVault:
 class TestSettings:
     def test_defaults_are_present(self):
         settings = Settings.load()
-        assert settings.model_for("general") == "claude-opus-5"
         assert settings.get("autonomy.require_grant_for_high_risk") is True
 
     def test_dotted_set_and_save(self):
@@ -65,7 +64,54 @@ class TestSettings:
     def test_corrupt_file_falls_back_to_defaults(self):
         from jarvis import paths
         paths.CONFIG_FILE.write_text("{not json", encoding="utf-8")
-        assert Settings.load().model_for("general") == "claude-opus-5"
+        assert Settings.load().get("autonomy.unattended_mode") is True
+
+
+class TestNothingCostsMoneyUntilYouSaySo:
+    """The promise: free out of the box, paid behind one deliberate switch.
+
+    It has to hold for a fresh install AND for a settings file written before
+    the default changed, because "a saved value always wins over a default" is
+    exactly how a better default fails to reach anyone who already ran setup.
+    """
+
+    def test_a_fresh_install_spends_nothing(self):
+        settings = Settings.load()
+        assert settings.get("thinking.model") == "auto"
+        assert settings.allow_paid is False
+
+    def test_a_settings_file_carrying_the_old_paid_default_is_migrated(self):
+        from jarvis import paths
+        paths.CONFIG_FILE.write_text(
+            '{"thinking": {"model": "claude-opus-5", "effort": "high"}}',
+            encoding="utf-8")
+        settings = Settings.load()
+        assert settings.get("thinking.model") == "auto"
+        assert settings.allow_paid is False
+
+    def test_a_paid_model_you_chose_on_purpose_is_left_alone(self):
+        """Migrating away from a default is right; overruling a decision is
+        not. Having switched paid on is what tells the two apart."""
+        from jarvis import paths
+        paths.CONFIG_FILE.write_text(
+            '{"thinking": {"model": "claude-opus-5", "allow_paid": true}}',
+            encoding="utf-8")
+        settings = Settings.load()
+        assert settings.get("thinking.model") == "claude-opus-5"
+        assert settings.allow_paid is True
+
+    def test_the_free_brains_come_first_in_the_provider_order(self):
+        order = Settings.load().get("provider_order")
+        assert order.index("ollama") < order.index("anthropic")
+        assert order.index("gemini") < order.index("anthropic")
+
+    def test_the_one_required_key_is_the_free_one(self):
+        """Claude used to be required, which meant an assistant that did
+        nothing until you had bought credit."""
+        from jarvis.config import KEY_SPECS_BY_NAME
+
+        assert KEY_SPECS_BY_NAME["GEMINI_API_KEY"].required is True
+        assert KEY_SPECS_BY_NAME["ANTHROPIC_API_KEY"].required is False
 
 
 class TestMemory:

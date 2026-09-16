@@ -22,6 +22,7 @@ the call still happens - just without your name in it.
 
 from __future__ import annotations
 
+import hashlib
 import sys
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,19 @@ REPO = Path(__file__).resolve().parents[2]
 
 DEFAULT_WAKE_PHRASE = "hey jarvis"
 DEFAULT_WAKE_REPLY = "Hey - what's up? How can I help?"
+
+#: How a custom command is written out so the model will actually follow it.
+#: The Commands tab creates "reply" rules, which used to be rendered nowhere
+#: at all: the voice agent only put "instruct" rules in the prompt, and unlike
+#: the terminal JARVIS it never matches rules locally. Every command written in
+#: the settings panel was therefore invisible to the thing meant to obey it.
+_RULE_SHAPES = {
+    "reply": ('- When they say "{trigger}", answer with exactly this and '
+              'nothing else: "{response}"'),
+    "run": ('- When they say "{trigger}", treat it as if they had said: '
+            '"{response}" - then do it, immediately.'),
+    "instruct": "- {response}",
+}
 
 
 def _repo_on_path() -> None:
@@ -83,6 +97,134 @@ def wake_block(settings: Any) -> str:
     )
 
 
+def _setting(settings: Any, key: str, default: str = "") -> str:
+    if settings is None:
+        return default
+    try:
+        return str(settings.get(key, default) or default).strip()
+    except Exception:
+        return default
+
+
+def rule_lines(rules: Any) -> list[str]:
+    """Every enabled custom command, written as an instruction to follow.
+
+    All three kinds, regardless of which one the panel happened to create.
+    Guessing which kinds matter is how the last set of commands went missing.
+    """
+    if rules is None:
+        return []
+    try:
+        everything = list(rules.all())
+    except Exception:
+        return []
+
+    lines: list[str] = []
+    for rule in everything:
+        if not getattr(rule, "enabled", True):
+            continue
+        response = str(getattr(rule, "response", "") or "").strip()
+        if not response:
+            continue
+        trigger = str(getattr(rule, "trigger", "") or "").strip()
+        kind = str(getattr(rule, "kind", "reply") or "reply")
+        shape = _RULE_SHAPES.get(kind, _RULE_SHAPES["instruct"])
+        if not trigger and kind != "instruct":
+            shape = _RULE_SHAPES["instruct"]
+        lines.append(shape.format(trigger=trigger, response=response))
+    return lines
+
+
+def your_orders(settings: Any = None, rules: Any = None) -> str:
+    """Everything the user wrote themselves, as one block that outranks the rest.
+
+    Position and wording are both load-bearing. This goes at the very top,
+    ahead of the template's own personality and its "hard rules", because the
+    template is a starting point and this is the person who owns the thing
+    saying what they want. And it says "override" rather than "take priority
+    over your general style guidance", because a rule like "always check my
+    calendar first" is behaviour, not style, and the narrower phrasing gave the
+    model room to decide it did not apply.
+    """
+    standing = _setting(settings, "persona.instructions")
+    forbidden = _setting(settings, "persona.never")
+    commands = rule_lines(rules)
+
+    if not (standing or forbidden or commands):
+        return ""
+
+    parts = [
+        "# YOUR STANDING ORDERS - from the person you work for\n"
+        "These are not suggestions and not style notes. They come from the "
+        "person you work for, they apply to every single conversation, and "
+        "they OVERRIDE everything else in these instructions - the "
+        "personality, the examples, the hard rules, all of it. Follow every "
+        "one of them, every time, without being reminded and without being "
+        "asked twice. If one of them conflicts with anything else you were "
+        "told, this section wins."
+    ]
+    if standing:
+        parts.append("## What they always want\n" + standing)
+    if forbidden:
+        parts.append(
+            "## What they never want\n"
+            "Absolute. If a request would require one of these, say you can't "
+            "and stop - don't look for a way around it.\n\n" + forbidden)
+    if commands:
+        parts.append(
+            "## Their own commands\n"
+            "They set these up themselves and they expect them to work every "
+            "time.\n\n" + "\n".join(commands))
+    return "\n\n".join(parts)
+
+
+def closing_reminder(settings: Any = None, rules: Any = None) -> str:
+    """The last word in the prompt, when there is anything to have the last
+    word about.
+
+    The end of a long prompt carries weight, and without this the last word
+    was the template's joke lines - which are the only place it says "you
+    **must**".
+    """
+    if not your_orders(settings, rules):
+        return ""
+    return ("# Before you answer anything\n"
+            "Re-read YOUR STANDING ORDERS at the top. They are the user's own "
+            "instructions, they outrank everything between here and there, and "
+            "not following one of them is a failure even if everything else "
+            "went well.")
+
+
+def fingerprint(settings: Any = None, rules: Any = None) -> str:
+    """A short hash of everything the user controls, for spotting an edit.
+
+    Used to notice a change without a restart. Hashing what the model would
+    actually be told - rather than a file modification time - means a save
+    that changed nothing doesn't interrupt a conversation to say nothing new.
+    """
+    material = "\n".join((your_orders(settings, rules),
+                           _setting(settings, "wake.phrase"),
+                           _setting(settings, "wake.reply")))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+
+
+def assemble(template: str, memory: Any = None, settings: Any = None,
+             rules: Any = None, extra: tuple[str, ...] = ()) -> str:
+    """The whole system prompt, in the order that makes the user's rules win.
+
+    Their orders first, the template second, everything situational in the
+    middle, and a one-line reminder of their orders last.
+    """
+    parts = (
+        your_orders(settings, rules),
+        template,
+        extra_instructions(memory, settings, rules),
+        *extra,
+        closing_reminder(settings, rules),
+    )
+    return "\n\n".join(part for part in parts if part and part.strip())
+
+
 def extra_instructions(memory: Any = None, settings: Any = None,
                        rules: Any = None) -> str:
     """Everything personal, appended to the template's own instructions."""
@@ -90,34 +232,10 @@ def extra_instructions(memory: Any = None, settings: Any = None,
 
     blocks.append(wake_block(settings))
 
-    # Whatever the user wrote in the interface. Placed early and stated
-    # plainly, because these are their instructions about their own
-    # assistant and should outrank the template's defaults.
-    if settings is not None:
-        try:
-            standing = str(settings.get("persona.instructions", "") or "").strip()
-            forbidden = str(settings.get("persona.never", "") or "").strip()
-        except Exception:
-            standing = forbidden = ""
-        if standing:
-            blocks.append(
-                "# Standing instructions from the user\n"
-                "These come directly from them and take priority over your "
-                "general style guidance.\n\n" + standing)
-        if forbidden:
-            blocks.append(
-                "# Things you must never do\n"
-                "Absolute. If a request would require one of these, say you "
-                "can't and stop - don't look for a way around it.\n\n"
-                + forbidden)
-
-    if rules is not None:
-        try:
-            standing = rules.instruction_block()
-            if standing:
-                blocks.append(standing)
-        except Exception:
-            pass
+    # The user's own instructions and commands are NOT here. They go at the
+    # very top of the prompt, ahead of the template, via `your_orders` - which
+    # is the whole point of that function. Repeating them here would spend
+    # tokens saying the same thing twice and weaken both copies.
 
     if memory is not None and getattr(memory, "available", False):
         try:

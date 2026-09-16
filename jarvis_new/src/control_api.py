@@ -347,12 +347,55 @@ class Control:
             return []
         return [rule.to_dict() for rule in book.all()]
 
-    def add_command(self, trigger: str, response: str) -> dict[str, Any]:
+    def add_command(self, trigger: str, response: str,
+                    kind: str = "reply") -> dict[str, Any]:
+        """Add a custom command of the kind the user actually meant.
+
+        The kind is not a detail. "Say exactly this" and "always do this" are
+        opposite instructions, and everything used to be created as the first
+        one - so "every time you open up, do this and that" came out as an
+        order to *recite* those words rather than act on them.
+        """
+        from jarvis.core.rules import KINDS
+
         book = self._rulebook()
         if book is None:
             raise ValueError("The rule book isn't available.")
-        rule = book.create(trigger.strip(), response.strip())
+        kind = (kind or "reply").strip().lower()
+        if kind not in KINDS:
+            raise ValueError(f"{kind!r} isn't a kind of command.")
+        trigger, response = trigger.strip(), response.strip()
+        if not response:
+            raise ValueError("A command needs something to do or say.")
+        if kind != "instruct" and not trigger:
+            raise ValueError("This kind of command needs a phrase to trigger it.")
+        rule = book.create(trigger, response, kind=kind)
         return rule.to_dict()
+
+    def orders(self) -> dict[str, Any]:
+        """Exactly what the agent is told about your rules, and whether it
+        has picked the latest version up.
+
+        Shown in the panel on purpose. "He ignores my commands" and "the
+        running agent has never seen my commands" look identical from the
+        outside, and this is what tells them apart.
+        """
+        import personalise
+
+        book = self._rulebook()
+        settings = self.config.settings
+        try:
+            block = personalise.your_orders(settings, book)
+            mark = personalise.fingerprint(settings, book)
+        except Exception as exc:                  # pragma: no cover - defensive
+            return {"text": "", "fingerprint": "", "error": str(exc)}
+        return {
+            "text": block,
+            "fingerprint": mark,
+            "note": ("This is word for word what Jarvis is told, before "
+                     "anything else. A running call picks up changes within "
+                     "a few seconds."),
+        }
 
     def delete_command(self, rule_id: str) -> dict[str, Any]:
         book = self._rulebook()
@@ -407,6 +450,7 @@ class Control:
             "permissions": self.permissions(),
             "thinking_models": self.thinking_models(),
             "costs": self.costs(),
+            "orders": self.orders(),
             "lessons": self.lessons(),
             "authorisations": AUTHORISATIONS,
         }
@@ -548,13 +592,17 @@ class _Handler(BaseHTTPRequestHandler):
         if head == "costs" and method == "GET":
             return control.costs()
 
+        if head == "orders" and method == "GET":
+            return control.orders()
+
         if head == "commands":
             if method == "GET":
                 return control.commands()
             if method == "POST":
                 body = self._body()
                 return control.add_command(str(body.get("trigger", "")),
-                                           str(body.get("response", "")))
+                                           str(body.get("response", "")),
+                                           str(body.get("kind", "reply")))
             if method == "DELETE" and rest:
                 return control.delete_command(rest[0])
 

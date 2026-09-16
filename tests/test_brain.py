@@ -336,3 +336,47 @@ class TestAssistantEntryPoint:
         use(assistant.brain, FakeResponse(content=[FakeText("Spoken.")]))
         reply = await assistant.ask("hi", speak=True)
         assert reply.text == "Spoken."
+
+
+class TestItDoesNotSpendWithoutPermission:
+    """Free-first routing, in the half that runs the CLI and the missions.
+
+    Choosing a brain is where money is actually decided, so the guard belongs
+    here rather than in whatever calls it. Claude is the best of these and the
+    only one that is billed, so it is reached only after you have said it may
+    be.
+    """
+
+    async def test_claude_is_not_chosen_while_paid_is_off(self, brain, monkeypatch):
+        brain.settings.set("thinking.allow_paid", False)
+        brain.settings.set("brain.local_first", False)   # no Ollama in the way
+        monkeypatch.setattr(brain.providers["gemini"], "available", lambda: True)
+
+        _provider, _model, label = brain.choose_brain("general", escalate=False)
+        assert label == "gemini-free"
+
+    async def test_switching_paid_on_reaches_claude(self, brain, monkeypatch):
+        brain.settings.set("thinking.allow_paid", True)
+        brain.settings.set("brain.local_first", False)
+        monkeypatch.setattr(brain.providers["anthropic"], "available", lambda: True)
+
+        _provider, _model, label = brain.choose_brain("general", escalate=False)
+        assert label == "claude"
+
+    async def test_asking_for_the_big_guns_still_does_not_override_the_switch(
+            self, brain, monkeypatch):
+        """"Heavy guns" is a request for the best brain, not consent to be
+        billed. The switch is the only thing that grants that."""
+        brain.settings.set("thinking.allow_paid", False)
+        monkeypatch.setattr(brain.providers["gemini"], "available", lambda: True)
+
+        _provider, _model, label = brain.choose_brain("general", escalate=True)
+        assert label != "claude"
+
+    async def test_your_own_machine_still_wins_when_it_is_running(
+            self, brain, monkeypatch):
+        brain.settings.set("thinking.allow_paid", True)
+        monkeypatch.setattr(brain, "_local_available", lambda: True)
+
+        _provider, _model, label = brain.choose_brain("general", escalate=False)
+        assert label == "local"

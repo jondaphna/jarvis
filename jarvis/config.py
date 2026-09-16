@@ -462,7 +462,6 @@ class Settings:
         "thinking.effort": ["high"],
         # The CLI brain, same story.
         "models.general": ["claude-opus-5"],
-        "models.voice": ["claude-haiku-4-5"],
     }
 
     _STALE_DEFAULTS = {

@@ -21,7 +21,8 @@ type Provider = {
   configured: boolean;
 };
 type Fact = { key: string; value: string; category?: string };
-type Command = { id: string; trigger: string; response: string };
+type Command = { id: string; trigger: string; response: string; kind?: string };
+type Orders = { text: string; fingerprint: string; note?: string; error?: string };
 type Step = { name?: string; plugin: string; params?: Record<string, unknown> };
 type Mission = {
   id: string;
@@ -61,6 +62,7 @@ type State = {
   thinking_models: ThinkingModel[];
   costs: Costs;
   lessons: Lesson[];
+  orders: Orders;
   authorisations: Authorisation[];
 };
 type ThinkingModel = { id: string; label: string; free: boolean; detail?: string };
@@ -235,9 +237,13 @@ function RulesTab({ state, reload }: { state: State; reload: () => void }) {
           {saving ? 'Saving…' : 'Save'}
         </Btn>
         {saved && (
-          <span className="text-xs text-emerald-500">Saved — restart the agent to apply.</span>
+          <span className="text-xs text-emerald-500">
+            Saved — a running conversation picks this up within a few seconds.
+          </span>
         )}
       </div>
+
+      <OrdersPreview state={state} />
 
       <div className="border-border space-y-2 border-t pt-5">
         <p className="text-sm font-medium">Which browser is yours?</p>
@@ -1064,16 +1070,53 @@ function MemoryTab({ state, reload }: { state: State; reload: () => void }) {
 /* Commands                                                                    */
 /* -------------------------------------------------------------------------- */
 
+const COMMAND_KINDS = [
+  {
+    id: 'reply',
+    label: 'Say exactly this',
+    hint: 'It repeats your words back, word for word. Nothing else.',
+    trigger: 'good morning',
+    response: 'Good morning, sir. Shall I run the briefing?',
+  },
+  {
+    id: 'run',
+    label: 'Do this',
+    hint: 'A shorthand. Saying the phrase is the same as asking for the whole thing.',
+    trigger: 'movie night',
+    response: 'open Netflix, turn the volume up and minimise everything else',
+  },
+  {
+    id: 'instruct',
+    label: 'Always do this',
+    hint: 'A standing rule, applied in every conversation. No trigger phrase needed.',
+    trigger: '',
+    response: 'Always answer in Hebrew unless I ask otherwise.',
+  },
+] as const;
+
 function CommandsTab({ state, reload }: { state: State; reload: () => void }) {
+  const [kind, setKind] = useState<string>('reply');
   const [trigger, setTrigger] = useState('');
   const [response, setResponse] = useState('');
+  const [error, setError] = useState('');
+
+  const shape = COMMAND_KINDS.find((k) => k.id === kind) ?? COMMAND_KINDS[0];
+  const needsTrigger = kind !== 'instruct';
 
   const add = async () => {
-    if (!trigger.trim() || !response.trim()) return;
-    await api('commands', { method: 'POST', body: JSON.stringify({ trigger, response }) });
-    setTrigger('');
-    setResponse('');
-    reload();
+    setError('');
+    if (!response.trim() || (needsTrigger && !trigger.trim())) return;
+    try {
+      await api('commands', {
+        method: 'POST',
+        body: JSON.stringify({ trigger, response, kind }),
+      });
+      setTrigger('');
+      setResponse('');
+      reload();
+    } catch (e) {
+      setError(String(e instanceof Error ? e.message : e));
+    }
   };
 
   const remove = async (id: string) => {
@@ -1084,7 +1127,8 @@ function CommandsTab({ state, reload }: { state: State; reload: () => void }) {
   return (
     <div className="space-y-5">
       <p className="text-muted-foreground text-sm">
-        Say the words on the left, get exactly the words on the right. No thinking, no variation.
+        Your own commands. Every one of them is put in front of Jarvis at the start of every
+        conversation, above everything else it was told — so they are followed, not weighed up.
       </p>
 
       {state.commands.length === 0 ? (
@@ -1097,7 +1141,15 @@ function CommandsTab({ state, reload }: { state: State; reload: () => void }) {
               className="border-border bg-card/50 flex items-start justify-between gap-3 rounded-md border px-3 py-2"
             >
               <div className="min-w-0 text-sm">
-                <p className="truncate font-medium">“{c.trigger}”</p>
+                <p className="truncate font-medium">
+                  {c.trigger ? `“${c.trigger}”` : 'Always'}
+                  <span className="text-muted-foreground bg-secondary ml-2 rounded-full px-2 py-0.5 text-[10px] font-semibold">
+                    {
+                      (COMMAND_KINDS.find((k) => k.id === (c.kind ?? 'reply')) ?? COMMAND_KINDS[0])
+                        .label
+                    }
+                  </span>
+                </p>
                 <p className="text-muted-foreground truncate">→ “{c.response}”</p>
               </div>
               <Btn tone="danger" onClick={() => remove(c.id)}>
@@ -1108,27 +1160,94 @@ function CommandsTab({ state, reload }: { state: State; reload: () => void }) {
         </div>
       )}
 
-      <div className="border-border space-y-2 border-t pt-4">
-        <Field label="When I say">
-          <input
-            className={inputClass}
-            value={trigger}
-            onChange={(e) => setTrigger(e.target.value)}
-            placeholder="good morning"
-          />
+      <div className="border-border space-y-3 border-t pt-4">
+        <Field
+          label="What kind of command?"
+          hint="This is the part that used to go wrong: an instruction saved as a thing to say gets recited instead of done."
+        >
+          <div className="flex flex-wrap gap-1.5">
+            {COMMAND_KINDS.map((k) => (
+              <button
+                key={k.id}
+                type="button"
+                onClick={() => setKind(k.id)}
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                  kind === k.id
+                    ? 'bg-primary text-primary-foreground'
+                    : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
+                }`}
+              >
+                {k.label}
+              </button>
+            ))}
+          </div>
         </Field>
-        <Field label="Say back, exactly">
-          <input
-            className={inputClass}
+        <p className="text-muted-foreground text-xs">{shape.hint}</p>
+
+        {needsTrigger && (
+          <Field label="When I say">
+            <input
+              className={inputClass}
+              value={trigger}
+              onChange={(e) => setTrigger(e.target.value)}
+              placeholder={shape.trigger}
+            />
+          </Field>
+        )}
+        <Field label={kind === 'reply' ? 'Say back, exactly' : 'Then'}>
+          <textarea
+            className={`${inputClass} min-h-16`}
             value={response}
             onChange={(e) => setResponse(e.target.value)}
-            placeholder="Good morning, sir. Shall I run the briefing?"
+            placeholder={shape.response}
           />
         </Field>
+        {error && <p className="text-destructive text-xs">{error}</p>}
         <Btn tone="primary" onClick={add}>
           Add command
         </Btn>
       </div>
+
+      <OrdersPreview state={state} />
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* What Jarvis is actually being told                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The answer to "I write the commands and he ignores them".
+ *
+ * Being ignored and never having been told look identical from the outside.
+ * This shows the exact words the agent is given, so the difference is visible
+ * rather than something to argue about.
+ */
+function OrdersPreview({ state }: { state: State }) {
+  const [open, setOpen] = useState(false);
+  const orders = state.orders;
+
+  return (
+    <div className="border-border space-y-2 border-t pt-4">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium">What Jarvis is actually being told</p>
+          <p className="text-muted-foreground text-xs">
+            {orders?.text
+              ? orders.note
+              : 'Nothing yet — whatever you write here and in Rules appears below.'}
+          </p>
+        </div>
+        <Btn onClick={() => setOpen(!open)} disabled={!orders?.text}>
+          {open ? 'Hide' : 'Show'}
+        </Btn>
+      </div>
+      {open && orders?.text && (
+        <pre className="border-border bg-card/50 max-h-72 overflow-auto rounded-md border p-3 text-xs whitespace-pre-wrap">
+          {orders.text}
+        </pre>
+      )}
     </div>
   );
 }

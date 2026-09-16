@@ -158,12 +158,29 @@ class TestBrainRouting:
     async def test_local_failure_falls_back_mid_turn(self, brain):
         from tests.test_brain import FakeResponse, FakeText
 
+        brain.settings.set("thinking.allow_paid", True)
         brain.providers["ollama"] = FakeOllama(fail=True)
         self._use_claude(brain, FakeResponse(content=[FakeText("Rescued.")]))
         reply = await brain.chat("hi")
         assert reply.text == "Rescued."
         assert reply.provider == "claude"
         assert reply.ok
+
+    async def test_a_local_stumble_is_rescued_for_free(self, brain, monkeypatch):
+        """The conversation must survive a wobbly local model without that
+        alone turning into a bill. Free brain first, paid only if allowed."""
+        brain.settings.set("thinking.allow_paid", False)
+        brain.providers["ollama"] = FakeOllama(fail=True)
+        monkeypatch.setattr(brain.providers["gemini"], "available", lambda: True)
+
+        rescue = brain._rescue_brain("general")
+        assert rescue is not None and rescue[2] == "gemini-free"
+
+    async def test_nothing_free_and_paid_off_means_no_rescue(self, brain, monkeypatch):
+        """Better to say the turn failed than to spend money nobody agreed to."""
+        brain.settings.set("thinking.allow_paid", False)
+        monkeypatch.setattr(brain.providers["gemini"], "available", lambda: False)
+        assert brain._rescue_brain("general") is None
 
     async def test_local_model_can_use_tools(self, brain, workspace):
         brain.providers["ollama"] = FakeOllama([
