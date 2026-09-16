@@ -140,6 +140,120 @@ def check_memory() -> None:
         fail(f"the memory layer itself failed: {exc}", "Tell me this error")
 
 
+def check_thinking() -> None:
+    print("\nThe thinking half")
+    sys.path.insert(0, str(HERE))
+    try:
+        import thinker
+    except Exception as exc:
+        fail(f"can't load the thinking module: {exc}", "Tell me this error")
+        return
+
+    if thinker.available():
+        print(OK + "Claude key stored - hard questions get real thought")
+    else:
+        print(WARN + "no Claude key, so it answers everything off the cuff")
+        problems.append(
+            "Add a Claude key for proper reasoning: jarvis keys set "
+            "ANTHROPIC_API_KEY (or the AI tab in settings)")
+
+    try:
+        from jarvis.config import Settings
+
+        settings = Settings.load()
+        print(OK + f"model: {settings.get('thinking.model', thinker.DEFAULT_MODEL)}"
+                   f" at {settings.get('thinking.effort', thinker.DEFAULT_EFFORT)} effort")
+    except Exception:
+        pass
+
+
+def check_long_conversations() -> None:
+    """The reason it used to go quiet partway through."""
+    print("\nStaying alive in a long conversation")
+    try:
+        source = (HERE / "agent.py").read_text(encoding="utf-8")
+    except OSError as exc:
+        fail(f"can't read agent.py: {exc}", "Try: git pull")
+        return
+
+    if "session_resumption=" in source:
+        print(OK + "session resumption on - a dropped session comes back")
+    else:
+        fail("session resumption is off - the conversation will die after a "
+             "while and lose every tool",
+             "Run: git pull")
+
+    if "context_window_compression=" in source:
+        print(OK + "context compression on - long conversations don't fill up")
+    else:
+        fail("context compression is off", "Run: git pull")
+
+
+def check_browser() -> None:
+    print("\nBrowser")
+    sys.path.insert(0, str(REPO))
+    try:
+        from chrome_finder import find_chrome
+    except Exception:
+        print(WARN + "couldn't check for Chrome")
+        return
+    chrome = find_chrome()
+    if chrome:
+        print(OK + f"Chrome: {chrome}")
+    else:
+        fail("Chrome not found - Jarvis needs it to open and control sites",
+             "Install Chrome from google.com/chrome")
+        return
+
+    try:
+        sys.path.insert(0, str(HERE))
+        import live_browser
+
+        print(OK + f"its browser profile: {live_browser.profile_dir()}")
+        if live_browser.port_is_open():
+            print(OK + "its Chrome window is running and attachable")
+        else:
+            print(WARN + "its Chrome window isn't open yet (normal when idle)")
+        copied = ", ".join(live_browser.SESSION_FILES)
+        print(OK + f"copies from your Chrome: {copied} - never saved passwords")
+    except Exception as exc:
+        fail(f"browser module problem: {exc}", "Tell me this error")
+
+
+def check_settings_routes() -> None:
+    """Five ways in, because a floating button can always be covered."""
+    print("\nSettings")
+    routes = 0
+    if (REPO / "butler-settings.bat").exists():
+        print(OK + "butler-settings.bat")
+        routes += 1
+    if (REPO / "jarvis_new" / "frontend" / "app" / "settings" / "page.tsx").exists():
+        print(OK + "its own page at localhost:3000/settings")
+        routes += 1
+    panel = REPO / "jarvis_new" / "frontend" / "components" / "app" / "control-panel.tsx"
+    try:
+        text = panel.read_text(encoding="utf-8")
+        if "z-[120]" in text:
+            print(OK + "gear button, raised above the call screen")
+            routes += 1
+        if "shiftKey" in text:
+            print(OK + "keyboard: Ctrl+Shift+S")
+            routes += 1
+    except OSError:
+        pass
+    try:
+        if "open_settings" in (REPO / "desktop_orb.py").read_text(encoding="utf-8"):
+            print(OK + "right-click the orb")
+            routes += 1
+    except OSError:
+        pass
+
+    if routes < 2:
+        fail("almost no way into settings", "Run: git pull")
+    else:
+        print(OK + f"{routes} independent ways in")
+
+
 def check_services() -> None:
     print("\nServices")
     from jarvis import paths
@@ -169,25 +283,11 @@ def check_services() -> None:
         print(WARN + "web app is not running (start butler-web.bat)")
 
 
-def check_browser() -> None:
-    print("\nBrowser")
-    sys.path.insert(0, str(REPO))
-    try:
-        from chrome_finder import find_chrome
-    except Exception:
-        print(WARN + "couldn't check for Chrome")
-        return
-    chrome = find_chrome()
-    if chrome:
-        print(OK + f"Chrome: {chrome}")
-    else:
-        fail("Chrome not found - the voice client does not work in Edge",
-             "Install Chrome from google.com/chrome")
-
-
 def main() -> int:
     print("\n  Jarvis - checking everything\n" + "  " + "-" * 44)
-    for check in (check_env, check_memory, check_services, check_browser):
+    for check in (check_env, check_thinking, check_long_conversations,
+                  check_memory, check_browser, check_services,
+                  check_settings_routes):
         try:
             check()
         except Exception as exc:
