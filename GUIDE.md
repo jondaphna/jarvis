@@ -255,6 +255,28 @@ memory.
   Start Menu, so anything you have installed works by the name you'd actually say.
 - If something isn't installed but exists as a website, it opens that instead.
 
+### Your own files
+Ask about your documents the way you'd ask a person:
+
+> "Where's the invoice from March?"
+> "What does my business plan say about pricing?"
+> "Find the script I wrote about the wedding video."
+
+It searches by filename **and** by what's inside the files, then reads the best
+match back and answers the question — not just tells you where the file is.
+
+Where it looks: Documents, Desktop, Downloads and the JARVIS workspace, with no
+setup. Add more folders in the settings file under `files.folders`. It refuses
+anything outside those, so it can't be talked into reading somewhere it
+shouldn't.
+
+**It only reads.** There's no write, move or delete in it. PDFs and Word
+documents work if the library is installed; if not, it finds them by name and
+says plainly that it can't read inside them.
+
+Nothing leaves the machine except the excerpt it quotes to answer your question,
+which is the whole point of asking.
+
 ### Your computer
 - **Open folders** — "open my downloads"
 - **Volume** — up, down, mute
@@ -396,6 +418,7 @@ Against your list — what's already there, and what I'd build in what order.
 | Persistent long-term memory | Done, shared database |
 | Autonomous browser control | Done, 11 tools |
 | Speaker voice biometrics | Built — CLI only, not yet in the web app |
+| Local file search | Done — "where's that invoice", "what does my plan say about pricing" |
 | Local LLM fallback (Ollama) | Wired in — it is now the *first* choice for thinking when it's running |
 | Everything free by default | Done — paid AI is one switch in the AI tab, off until you flip it |
 | Teach it once and it remembers | Done — the Learned tab, taught out loud or typed in |
@@ -410,10 +433,8 @@ Against your list — what's already there, and what I'd build in what order.
    is you.
 2. **Google Calendar and Gmail** — the biggest daily win, and the tasks system is
    already there to hang it on.
-3. **Local file search and document summarising** — point it at a folder, ask it
-   things about your own documents.
-4. **System monitoring and Spotify** — small, satisfying, low risk.
-5. **Proactive speech** — it starts the conversation, instead of waiting.
+3. **System monitoring and Spotify** — small, satisfying, low risk.
+4. **Proactive speech** — it starts the conversation, instead of waiting.
 
 ### Worth doing later
 Financial tracking, IDE and Git integration, gesture control, multi-agent

@@ -369,9 +369,9 @@ def check_learning() -> None:
     print(OK + f"{len(taught)} taught by you, {len(watched)} picked up by watching")
 
     block = lessons.block()
-    if block.strip():
-        print(OK + f"{block.count(chr(10) + '- ') + 1} of them go into the "
-                   "next call's instructions")
+    reaching = sum(1 for line in block.splitlines() if line.startswith("- "))
+    if reaching:
+        print(OK + f"{reaching} of them go into the next call's instructions")
     else:
         fail("lessons exist but none reach the prompt",
              "Tell me this - it means teaching it does nothing")

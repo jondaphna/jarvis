@@ -39,6 +39,20 @@ def control_source() -> str:
     return (SRC / "control_api.py").read_text(encoding="utf-8")
 
 
+class _Named:
+    """A stand-in with just the shape `filter_tools` looks at."""
+
+    def __init__(self, name: str) -> None:
+        self.info = type("Info", (), {"name": name})()
+
+
+class _Defaults:
+    """Settings as a fresh install has them: every switch at its default."""
+
+    def get(self, dotted: str, default: object = None) -> object:
+        return default
+
+
 # --------------------------------------------------------------------------- #
 # The buttons
 # --------------------------------------------------------------------------- #
@@ -183,11 +197,12 @@ class TestThePromptDescribesTheToolsThatExist:
         unknown = sorted(n for n in named if n not in self.real_tools())
         assert not unknown, f"the prompt tells it to use {unknown}, which don't exist"
 
-    def test_every_switch_governs_a_tool_that_exists(self) -> None:
+    def every_tool(self) -> set[str]:
+        """Every tool the agent could hand the model, switches aside."""
         import brain_memory
+        import files
         import learning
         import os_tools
-        import permissions
         import thinker
         import tools as browser_tools
         from browser import BrowserManager
@@ -197,22 +212,42 @@ class TestThePromptDescribesTheToolsThatExist:
             brain_memory.JarvisMemory(),
             learning.Lessons(),
             os_tools.OSTools(),
+            files.FileTools(),
             thinker.Thinker(),
         )
-        real = {t.info.name for holder in holders for t in holder.tools}
+        return {t.info.name for holder in holders for t in holder.tools}
+
+    def test_every_switch_governs_a_tool_that_exists(self) -> None:
+        import permissions
+
+        real = self.every_tool()
         assert real >= permissions.GOVERNED, \
             f"switches govern tools that don't exist: {sorted(permissions.GOVERNED - real)}"
+
+    def test_every_tool_has_a_switch(self) -> None:
+        """A tool with no switch cannot be turned off, which makes the
+        permissions tab a partial answer to "what can it do"."""
+        import permissions
+
+        real = self.every_tool()
         assert real <= permissions.GOVERNED, \
             f"tools with no switch at all: {sorted(real - permissions.GOVERNED)}"
 
     def test_the_tool_surface_stays_small(self) -> None:
         """Measured, because this is what broke it. Twenty-four tools and a
-        two-thousand-token prompt is how "open my Spotify" started failing."""
+        two-thousand-token prompt is how "open my Spotify" started failing.
+
+        The number that matters is what a fresh install actually hands the
+        model - not every tool that exists. Power actions are off by default
+        and cost nothing until you switch them on.
+        """
         import permissions
 
-        assert len(permissions.GOVERNED) <= 22, (
-            f"{len(permissions.GOVERNED)} tools - every one of them competes "
-            "for attention with the request actually being made")
+        shipped = permissions.filter_tools(
+            [_Named(name) for name in sorted(self.every_tool())], _Defaults())
+        assert len(shipped) <= 21, (
+            f"{len(shipped)} tools on a fresh install - every one of them "
+            "competes for attention with the request actually being made")
 
 
 # --------------------------------------------------------------------------- #

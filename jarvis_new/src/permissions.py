@@ -67,6 +67,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         "Processor, memory, disk and battery.",
         ("system_status",)),
     Capability(
+        "files", "Read your own files",
+        "Find and read your documents to answer a question about them - "
+        "\"where's that invoice\", \"what does my plan say about pricing\". "
+        "Reading only: it never changes, moves or deletes anything.",
+        ("search_my_files",)),
+    Capability(
         "memory", "Remember things about you",
         "Save and recall what you tell it, and search past conversations.",
         ("remember", "forget", "search_memory")),

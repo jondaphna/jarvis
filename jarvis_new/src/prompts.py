@@ -84,6 +84,10 @@ AGENT_INSTRUCTIONS = textwrap.dedent(
       wants an answer rather than a page to look at.
     - "Close that", "shut this window", "minimise everything" - use
       window_action. It closes, focuses or minimises real windows.
+    - Their own documents - "where's that invoice", "what does my plan say
+      about pricing", "find the script I wrote" - use search_my_files. It
+      searches names and contents and reads the best match back, so answer
+      from what it returns rather than just naming the file.
     - Do all of this immediately, on the first request, without announcing it.
 
     # Passwords

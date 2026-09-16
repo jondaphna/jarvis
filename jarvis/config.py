@@ -377,6 +377,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "reasoning": True,
     },
 
+    # --- which folders "search my files" may look in ----------------------- #
+    # Blank means the obvious ones: Documents, Desktop, Downloads and the
+    # JARVIS workspace. Anything listed here is added to those. Reading only -
+    # nothing in this list can be changed by voice.
+    "files": {
+        "folders": [],
+    },
+
     # --- which browser profile "open my Netflix" should use ---------------- #
     # Blank means "whichever Chrome profile is signed in". Set from the
     # interface when you have more than one and want a specific one.

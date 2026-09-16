@@ -16,6 +16,7 @@ from livekit.plugins import ai_coustics, google
 from brain_memory import JarvisMemory
 from browser import BrowserManager
 from control_api import serve_in_background
+from files import FileTools
 from learning import Lessons
 from os_tools import OSTools
 from permissions import filter_tools
@@ -41,6 +42,9 @@ class Assistant(Agent):
         # opening a second connection to the same SQLite file.
         self.lessons = lessons or Lessons(self.memory)
         self.os_tools = OSTools()
+        # Your own documents, searched locally and read back. Free, and
+        # nothing about them leaves the machine except the part it quotes.
+        self.file_tools = FileTools()
         # The smart half. The voice stays fast; this is where hard
         # problems go.
         self.thinker = Thinker()
@@ -109,6 +113,7 @@ class Assistant(Agent):
                 *self.memory.tools,
                 *self.lessons.tools,
                 *self.os_tools.tools,
+                *self.file_tools.tools,
                 *self.thinker.tools,
                 *self._end_call_tool.tools,
             ], self._settings),
