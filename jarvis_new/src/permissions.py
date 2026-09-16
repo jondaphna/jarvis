@@ -80,7 +80,7 @@ CAPABILITIES: tuple[Capability, ...] = (
         "learning", "Learn from you",
         "Let you teach it how you want jobs done, and let it write down a "
         "recipe that worked so the same request lands first time next time.",
-        ("remember_how",)),
+        ("remember_how", "how_do_i")),
     Capability(
         "reasoning", "Think hard about things",
         "Hand difficult questions, plans and writing to a second brain "

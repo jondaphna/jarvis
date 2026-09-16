@@ -1,3 +1,6 @@
+import contextlib
+from typing import Any
+
 from dotenv import load_dotenv
 from google.genai import types as genai_types
 from livekit.agents import (
@@ -244,7 +247,7 @@ async def my_agent(ctx: JobContext):
     )
 
     # Watch for edits to the settings panel while the call is running.
-    _watch_for_edits(assistant)
+    _watch_for_edits(assistant, ctx)
 
     # Join the room and connect to the user
     await ctx.connect()
@@ -255,12 +258,18 @@ async def my_agent(ctx: JobContext):
 RELOAD_SECONDS = 4.0
 
 
-def _watch_for_edits(assistant: Assistant) -> None:
+def _watch_for_edits(assistant: Any, ctx: Any = None) -> None:
     """Keep the running call in step with the settings panel.
 
     Without this, typing a command during a conversation does nothing until the
     next one, which from the outside is identical to the command being ignored.
-    The task is cancelled with the session and can never raise into it.
+
+    It is stopped when the call ends, which matters more than it sounds: one
+    worker process serves many calls, and a poll loop with nothing to stop it
+    outlives the call that started it - holding that call's whole agent, its
+    browser and its database handles alive behind it, and reading the settings
+    file every few seconds for as long as the process lives. Ten calls in,
+    there would be ten of them.
     """
     import asyncio
 
@@ -278,6 +287,14 @@ def _watch_for_edits(assistant: Assistant) -> None:
     # Held so the loop isn't garbage-collected mid-flight; asyncio only keeps
     # a weak reference to a running task.
     assistant._reload_task = task
+
+    async def stop() -> None:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+
+    if ctx is not None:
+        ctx.add_shutdown_callback(stop)
 
 
 def _record_conversation(session: AgentSession, memory: JarvisMemory,
@@ -308,18 +325,28 @@ def _record_conversation(session: AgentSession, memory: JarvisMemory,
         This is the half of learning that costs the user nothing. A request
         that succeeds first time is a demonstration, and writing down what was
         done means the same words next week go straight to the same steps.
+
+        The timestamps matter. A job runs its tools in several rounds, each
+        arriving here separately, and with preemptive generation the next
+        thing said can arrive before the last round reports. Passing when the
+        work started lets the recipe be hung on the sentence that actually
+        asked for it instead of whichever one was most recent.
         """
         if lessons is None:
             return
         try:
             calls = []
+            started: float | None = None
             for call, output in event.zipped():
+                when = getattr(call, "created_at", None)
+                if isinstance(when, (int, float)):
+                    started = when if started is None else min(started, when)
                 calls.append((
                     getattr(call, "name", "") or "",
                     getattr(call, "arguments", "") or "",
                     bool(getattr(output, "is_error", False)) if output else True,
                 ))
-            lessons.watched(calls)
+            lessons.watched(calls, started_at=started)
         except Exception:
             pass
 

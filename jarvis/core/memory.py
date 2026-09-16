@@ -162,6 +162,21 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _now_precise() -> str:
+    """Timestamps for lessons, to the millisecond.
+
+    Lessons are ordered by when they were last touched, and whole seconds are
+    not fine enough: teach it two things in the same second, or look one up
+    immediately after, and the ordering falls back to insertion order - which
+    puts the OLDEST first and quietly loses the thing that just happened.
+
+    Sorts correctly against existing second-precision rows: at the same second
+    the millisecond form compares greater, which is the right answer, because
+    it was written later.
+    """
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
 @dataclass
 class Message:
     role: str
@@ -382,18 +397,63 @@ class Memory:
                 "said=excluded.said, source=excluded.source, "
                 "confidence=excluded.confidence",
                 (key, (said or trigger).strip(), steps.strip(), source,
-                 kept_uses, float(confidence), _now()),
+                 kept_uses, float(confidence), _now_precise()),
             )
         return key
 
     def lessons(self, limit: int = 40) -> list[dict[str, Any]]:
-        """Everything it has been taught, most trusted and most used first."""
+        """Everything it has been taught, most recently touched first.
+
+        Ordering used to be confidence, then use count. That quietly broke
+        teaching: a lesson taught today has been used zero times, so once you
+        had more lessons than fit in the prompt, THE NEXT THING YOU TAUGHT IT
+        WAS NEVER SHOWN - stored, findable, and invisible. Recency is ranked
+        alongside use for exactly that reason, so something you just said out
+        loud always gets a hearing.
+        """
         rows = self._query(
             "SELECT id, trigger, said, steps, source, uses, confidence, "
             "created_at, used_at FROM lessons "
-            "ORDER BY confidence DESC, uses DESC, COALESCE(used_at, created_at) DESC "
+            # Purely recency, deliberately. How often a lesson gets used is
+            # a separate claim on the prompt and `top_lessons` weighs it
+            # separately; mixing the two here is what let a well-used old
+            # lesson push out the one taught thirty seconds ago.
+            "ORDER BY confidence DESC, "
+            "         COALESCE(used_at, created_at) DESC, "
+            # Timestamps are whole seconds, so lessons learned in the same
+            # second tie - and a tie broken by insertion order puts the OLDEST
+            # first, which is the bug this ordering exists to fix.
+            "         id DESC "
             "LIMIT ?", (limit,))
         return [dict(r) for r in rows]
+
+    def top_lessons(self, limit: int = 30) -> list[dict[str, Any]]:
+        """The ones worth spending prompt space on: recent AND well-used.
+
+        Two different claims on a limited space. What you asked for an hour
+        ago is likely to come up again; so is the thing you ask for every day
+        even if it was last week. Taking the best of both beats either alone,
+        and beats a single ORDER BY that has to choose.
+        """
+        recent = self.lessons(limit=limit)
+        frequent = [dict(r) for r in self._query(
+            "SELECT id, trigger, said, steps, source, uses, confidence, "
+            "created_at, used_at FROM lessons "
+            "WHERE uses > 0 ORDER BY confidence DESC, uses DESC, id DESC "
+            "LIMIT ?", (limit,))]
+
+        merged: dict[str, dict[str, Any]] = {}
+        # Interleaved so neither list can crowd the other out of the budget.
+        for pair in zip(recent, frequent + recent):
+            for row in pair:
+                if row["trigger"] not in merged and len(merged) < limit:
+                    merged[row["trigger"]] = row
+        for row in recent + frequent:          # fill any remaining space
+            if row["trigger"] not in merged and len(merged) < limit:
+                merged[row["trigger"]] = row
+        # Taught before watched, so your own words are read first.
+        return sorted(merged.values(),
+                      key=lambda r: (-r["confidence"], -r["uses"]))
 
     def lesson_for(self, text: str) -> dict[str, Any] | None:
         """The lesson for this phrase: an exact key first, then near enough.
@@ -417,15 +477,60 @@ class Memory:
         words = set(key.split())
         if len(words) < 2:
             return None
+
+        # Narrowed in the database rather than in Python. Scoring the two
+        # hundred most recent rows meant that past two hundred lessons, the
+        # oldest ones could only be found by saying the exact words again -
+        # and nobody remembers the exact words they used in June. This looks
+        # at every lesson that shares a word with the request, however old.
+        clauses = " OR ".join(["trigger LIKE ?"] * len(words))
+        rows = self._query(
+            "SELECT id, trigger, said, steps, source, uses, confidence "
+            f"FROM lessons WHERE {clauses}",
+            tuple(f"%{word}%" for word in sorted(words)))
+
         best, best_score = None, 0.0
-        for row in self.lessons(limit=200):
+        for row in rows:
             other = set(str(row["trigger"]).split())
             if not other:
                 continue
             overlap = len(words & other) / len(words | other)
-            if overlap > best_score:
-                best, best_score = row, overlap
+            # Ties go to the one you taught rather than one it inferred.
+            score = overlap + (0.001 if row["confidence"] >= 1.0 else 0.0)
+            if score > best_score:
+                best, best_score = dict(row), score
         return best if best_score >= 0.6 else None
+
+    def near_lessons(self, text: str, limit: int = 5) -> list[dict[str, Any]]:
+        """Lessons that share wording with this, best first.
+
+        For when matching on words isn't enough. "Put my Spotify on" and "open
+        my Spotify" are one request to a person and share a single word; no
+        overlap threshold fixes that, because it needs to know the phrases
+        mean the same thing. Handing the near misses to the model is cheaper
+        and better than buying an embedding service to decide it - the model
+        already knows what was said and what the words mean.
+        """
+        key = self.normalise_trigger(text)
+        words = set(key.split())
+        if not words:
+            return []
+        clauses = " OR ".join(["trigger LIKE ?"] * len(words))
+        rows = self._query(
+            "SELECT id, trigger, said, steps, source, uses, confidence "
+            f"FROM lessons WHERE {clauses}",
+            tuple(f"%{word}%" for word in sorted(words)))
+
+        scored = []
+        for row in rows:
+            other = set(str(row["trigger"]).split())
+            shared = len(words & other)
+            if not shared:
+                continue
+            scored.append((shared / len(words | other),
+                           row["confidence"], dict(row)))
+        scored.sort(key=lambda row: (row[0], row[1]), reverse=True)
+        return [row[2] for row in scored[:limit]]
 
     def lesson_used(self, trigger: str) -> None:
         """Count a lesson as having been useful. Never raises."""
@@ -436,7 +541,7 @@ class Memory:
             with self._write() as conn:
                 conn.execute(
                     "UPDATE lessons SET uses = uses + 1, used_at = ? "
-                    "WHERE trigger = ?", (_now(), key))
+                    "WHERE trigger = ?", (_now_precise(), key))
         except Exception:
             pass
 
@@ -453,7 +558,7 @@ class Memory:
         without having to go looking for it, and a block long enough to bury
         the current request defeats that.
         """
-        rows = self.lessons(limit=limit)
+        rows = self.top_lessons(limit=limit)
         if not rows:
             return ""
         lines = []

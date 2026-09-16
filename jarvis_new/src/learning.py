@@ -35,6 +35,7 @@ nothing this session" rather than raising.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -59,6 +60,12 @@ NOT_A_STEP = frozenset({
 #: being a one-off. "Open my Spotify" recurs; a rambling paragraph does not,
 #: and learning it just fills the prompt with noise.
 MAX_TRIGGER_WORDS = 14
+
+#: How many lessons go into the prompt at the start of a call. A budget, not
+#: a capacity: everything beyond this is still stored and still reachable with
+#: `how_do_i`, so teaching it more never stops working - it just stops being
+#: free of a lookup.
+BLOCK_LIMIT = 25
 
 #: Openings that mean a question rather than a job. Questions have answers,
 #: not recipes, and an answer learned today is wrong tomorrow.
@@ -125,9 +132,19 @@ class Lessons:
         #: Reuse the caller's database handle when there is one - the shared
         #: SQLite file is happier with one connection than with two.
         self.db = getattr(memory, "db", None) or _open_memory()
-        #: The last thing the user said, kept so a successful turn can be
-        #: attributed to the words that asked for it.
-        self._last_said = ""
+        #: The last few things said, with when. Not just the latest: with
+        #: preemptive generation the next thing you say can arrive before the
+        #: tools for the last thing have reported, and attributing a recipe to
+        #: the wrong sentence teaches it that "turn it up" means "open
+        #: Netflix".
+        self._said: list[tuple[float, str]] = []
+        #: Tool calls seen so far for the request being carried out. A real
+        #: job runs in several rounds - search, look, click - and each round
+        #: arrives as its own event. Keeping only the last one learns "click
+        #: the play button" with no search in front of it.
+        self._turn_trigger = ""
+        self._turn_calls: list[tuple[str, Any, bool]] = []
+        self._turn_failed = False
         self._taught_this_turn = False
 
     @property
@@ -138,7 +155,7 @@ class Lessons:
     # What goes into the instructions
     # ------------------------------------------------------------------ #
 
-    def block(self, limit: int = 25) -> str:
+    def block(self, limit: int = BLOCK_LIMIT) -> str:
         """Your lessons, for the top of the system prompt.
 
         This is the whole mechanism. Having the recipe already in front of it
@@ -159,6 +176,10 @@ class Lessons:
             "earlier conversations. When something they say matches one of "
             "these, follow it exactly and immediately - don't reason it out "
             "again, and don't mention that you were taught it.\n"
+            "This is the most recent and most used of what you know, not all "
+            "of it. If they ask for a job that sounds like something they have "
+            "had you do before and it isn't listed here, call how_do_i before "
+            "guessing.\n"
             "If they correct you, call remember_how with the corrected steps "
             "so it is right from now on.\n\n" + body)
 
@@ -173,48 +194,127 @@ class Lessons:
             "- When they correct something you just did, call remember_how with "
             "the corrected version. Being told twice is a failure.\n"
             "- Never ask permission to learn something, and never read your "
-            "lessons back at them unless they ask what you know.")
+            "lessons back at them unless they ask what you know.\n"
+            "- If they ask for one of their own jobs and you can't see the "
+            "steps for it, call how_do_i before guessing. You know more than "
+            "fits in these instructions.")
 
     # ------------------------------------------------------------------ #
     # Watching
     # ------------------------------------------------------------------ #
 
-    def heard(self, said: str) -> None:
-        """Remember the words of the request currently being carried out."""
+    def heard(self, said: str, at: float | None = None) -> None:
+        """Remember the words of a request, and when they arrived."""
+        import time
+
         text = " ".join((said or "").split())
-        if text:
-            self._last_said = text
-            self._taught_this_turn = False
+        if not text:
+            return
+        self._said.append((time.time() if at is None else at, text))
+        del self._said[:-8]                    # a few is plenty
+        self._taught_this_turn = False
+
         try:
             # Counts towards "this lesson is useful" only when one exists.
-            if text and self.db is not None and self.db.lesson_for(text):
+            if self.db is not None and self.db.lesson_for(text):
                 self.db.lesson_used(text)
         except Exception:
             pass
 
-    def watched(self, calls: list[tuple[str, Any, bool]]) -> str:
-        """Record the recipe that just worked. Returns the trigger, or "".
+    def _trigger_for(self, started_at: float | None) -> str:
+        """Which sentence asked for the tools that started at this moment.
 
-        `calls` is (tool name, arguments, failed) per call, in order.
+        The newest thing said BEFORE the work began. Anything said after is a
+        different request that happens to overlap - an interruption, a
+        follow-up, a change of mind - and hanging this recipe on it is how the
+        store fills up with nonsense.
         """
-        if not self.db or not self._last_said or self._taught_this_turn:
+        if not self._said:
             return ""
-        if not worth_learning(self._last_said):
+        if started_at is None:
+            return self._said[-1][1]
+        earlier = [text for when, text in self._said if when <= started_at]
+        return earlier[-1] if earlier else ""
+
+    def watched(self, calls: list[tuple[str, Any, bool]],
+                started_at: float | None = None) -> str:
+        """Record what has been done for this request so far.
+
+        Called once per round of tool calls, and a real job takes several. The
+        rounds accumulate into one recipe rather than replacing each other, so
+        "play Daft Punk on Spotify" is learned as search-then-click and not as
+        a bare click.
+        """
+        if not self.db or self._taught_this_turn:
             return ""
-        # One failure and the recipe is not worth keeping: a lesson that
-        # reproduces a mistake is worse than having to think it through again.
-        if any(failed for _, _, failed in calls):
+
+        trigger = self._trigger_for(started_at)
+        if not trigger or not worth_learning(trigger):
             return ""
-        steps = [describe_call(name, args) for name, args, _ in calls
+
+        if trigger != self._turn_trigger:      # a new request: start again
+            self._turn_trigger = trigger
+            self._turn_calls = []
+            self._turn_failed = False
+
+        self._turn_calls.extend(calls)
+        # One failure anywhere and the whole recipe goes: half a job is not a
+        # job, and a lesson that reproduces a mistake is worse than having to
+        # work it out again. That includes the part already written down from
+        # the rounds before the failure.
+        if any(f for _, _, f in calls):
+            self._turn_failed = True
+            self._forget_partial(trigger)
+        if self._turn_failed:
+            return ""
+
+        steps = [describe_call(name, args) for name, args, _ in self._turn_calls
                  if name not in NOT_A_STEP]
         if not steps:
             return ""
         try:
-            return self.db.learn(
-                self._last_said, ", then ".join(steps),
-                said=self._last_said, source="watched")
+            return self.db.learn(trigger, ", then ".join(steps),
+                                 said=trigger, source="watched")
         except Exception:
             return ""
+
+    def _closest(self, wanted: str) -> str:
+        """What to say when nothing matches outright.
+
+        Near misses beat a flat "never taught me", because the words people
+        use for the same job drift - "put my Spotify on" one week, "open my
+        Spotify" the next - and the model is better placed than any overlap
+        score to tell whether two phrasings mean the same thing. Offered as
+        guesses, never as the answer: a near miss followed as though it were
+        exact is how it does the wrong job confidently.
+        """
+        try:
+            near = self.db.near_lessons(wanted, limit=5)
+        except Exception:
+            near = []
+        if not near:
+            return (f"You've never shown me how to {wanted}. Do it the best "
+                    f"way you can, and if they correct you, call remember_how.")
+        lines = "\n".join(
+            f'- when they say "{row["said"] or row["trigger"]}": {row["steps"]}'
+            for row in near)
+        return (f"Nothing matches {wanted!r} exactly. The closest things they "
+                f"have taught you are below - if one of them is the same job "
+                f"said differently, follow it; if none of them is, do it your "
+                f"own way and let them correct you.\n" + lines)
+
+    def _forget_partial(self, trigger: str) -> None:
+        """Drop the half-recipe written before a later step failed.
+
+        Only ever removes something it wrote itself by watching: a lesson you
+        taught out loud is not collateral for a tool that misfired.
+        """
+        try:
+            existing = self.db.lesson_for(trigger)
+            if existing and existing.get("source") == "watched":
+                self.db.unlearn(existing["trigger"])
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ #
     # The tool
@@ -222,7 +322,43 @@ class Lessons:
 
     @property
     def tools(self) -> list:
-        return [self.remember_how]
+        return [self.remember_how, self.how_do_i]
+
+    @function_tool()
+    async def how_do_i(self, context: RunContext, task: str) -> str:
+        """Look up how they told you to do a job you can't see in your notes.
+
+        Your instructions carry the lessons they use most and most recently,
+        which is not all of them. Use this when they ask for something that
+        sounds like one of their own jobs - a name only they would use, a
+        routine, a piece of their work - and you don't already have the steps.
+
+        Faster than guessing and far better than getting it wrong. One call,
+        then do what it says.
+
+        Don't use it for ordinary requests you already know how to do, and
+        don't use it for general knowledge - it only knows what they taught it.
+
+        Args:
+            task: What they asked for, in their words.
+        """
+        if not self.db:
+            raise ToolError("I can't get at my notes right now.")
+        wanted = (task or "").strip()
+        if not wanted:
+            raise ToolError("Look up how to do what?")
+        try:
+            found = self.db.lesson_for(wanted)
+        except Exception as exc:
+            raise ToolError(f"I couldn't check my notes: {exc}") from exc
+        if not found:
+            return self._closest(wanted)
+        with contextlib.suppress(Exception):
+            # Counts as used, which is what brings it back into the prompt for
+            # next time - so asking twice in a week only costs a lookup once.
+            self.db.lesson_used(found["trigger"])
+        return (f'They taught you: when they say "{found["said"] or found["trigger"]}", '
+                f'{found["steps"]}')
 
     @function_tool()
     async def remember_how(self, context: RunContext, when_they_say: str,
@@ -272,4 +408,5 @@ class Lessons:
         # Stops the watcher overwriting what was just said out loud with
         # whatever tools happen to run for the rest of this turn.
         self._taught_this_turn = True
+        self._turn_trigger, self._turn_calls = "", []
         return f"Learned: when they say {key!r}, {steps}"

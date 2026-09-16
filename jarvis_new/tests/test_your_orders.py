@@ -251,10 +251,65 @@ class TestTheRunningCallPicksUpAnEdit:
         import agent
 
         source = inspect.getsource(agent.my_agent)
-        assert "_watch_for_edits(assistant)" in source
+        assert "_watch_for_edits(assistant, ctx)" in source
         assert "reload_rules" in inspect.getsource(agent._watch_for_edits)
 
     def test_it_checks_often_enough_to_feel_immediate(self) -> None:
         import agent
 
         assert agent.RELOAD_SECONDS <= 10
+
+
+class TestTheWatcherStopsWhenTheCallDoes:
+    """One worker process serves many calls over a day.
+
+    A poll loop with nothing to stop it outlives the call that started it,
+    holding the whole agent - browser, memory, lessons - alive behind it, and
+    goes on reading the settings file every few seconds forever. Ten calls in
+    and there are ten of them.
+    """
+
+    class FakeContext:
+        def __init__(self):
+            self.shutdown_callbacks = []
+
+        def add_shutdown_callback(self, callback):
+            self.shutdown_callbacks.append(callback)
+
+    class FakeAssistant:
+        async def reload_rules(self):
+            return False
+
+    async def test_the_loop_is_registered_for_shutdown(self) -> None:
+        import agent
+
+        ctx = self.FakeContext()
+        assistant = self.FakeAssistant()
+        agent._watch_for_edits(assistant, ctx)
+        try:
+            assert ctx.shutdown_callbacks, "nothing will ever stop the loop"
+        finally:
+            assistant._reload_task.cancel()
+
+    async def test_shutdown_actually_cancels_it(self) -> None:
+        import asyncio
+
+        import agent
+
+        ctx = self.FakeContext()
+        assistant = self.FakeAssistant()
+        agent._watch_for_edits(assistant, ctx)
+        task = assistant._reload_task
+
+        for callback in ctx.shutdown_callbacks:
+            await callback()
+        await asyncio.sleep(0)
+        assert task.cancelled() or task.done(), "the loop is still running"
+
+    def test_the_session_hands_it_the_context(self) -> None:
+        """A watcher started without one is a watcher nobody can stop."""
+        import inspect
+
+        import agent
+
+        assert "_watch_for_edits(assistant, ctx)" in inspect.getsource(agent.my_agent)

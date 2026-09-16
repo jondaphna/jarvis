@@ -231,6 +231,18 @@ deletable. Nothing is a black box, nothing is training a model, and nothing is
 uploaded anywhere: it is rows in the same local database as the rest of your
 memory.
 
+**It keeps working as you teach it more.** Its instructions carry the lessons
+you use most and most recently — about twenty-five of them. Everything beyond
+that is still there: when you ask for one of your own jobs and it can't see the
+steps, it looks the recipe up, uses it, and that brings the lesson back into its
+instructions for next time. So the second time you ask for something in a month,
+it's already in front of it.
+
+If you word it differently from how you first taught it — "put my Spotify on"
+versus "open my Spotify" — it shows itself the closest things you've taught and
+decides whether one of them is the same job. Word matching alone can't know
+those mean the same thing; the model can.
+
 ### Conversation
 - Real-time voice, both directions, with proper echo cancellation
 - Interrupt it mid-sentence; it stops and listens
