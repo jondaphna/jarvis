@@ -135,6 +135,7 @@ jarvis_new/
   src/prompts.py    the butler personality
   src/workers.py    background jobs, off the voice thread
   src/content/      the content engine - see CONTENT_ENGINE.md
+  src/routines/     the standing routines - see ROUTINES.md
   frontend/         the web page (Next.js)
 agent-starter-flutter/   the phone app
 ```

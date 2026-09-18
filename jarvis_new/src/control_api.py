@@ -403,6 +403,60 @@ class Control:
             raise ValueError("The rule book isn't available.")
         return {"id": rule_id, "deleted": book.remove(rule_id)}
 
+    # -- standing routines ------------------------------------------------ #
+
+    def routines(self) -> dict[str, Any]:
+        """Every routine, the actions available, and how the engine is doing.
+
+        One call rather than three, because the Rules panel draws the whole
+        tab at once and three round trips to localhost is three chances for
+        the tab to be half-drawn.
+        """
+        from routines import catalogue
+        from routines.engine import get_engine
+
+        runner = get_engine()
+        return {
+            "routines": runner.listing(),
+            "actions": catalogue(),
+            "summary": runner.summary(),
+            "recent": runner.store.runs(limit=20),
+        }
+
+    def save_routine(self, raw: dict[str, Any]) -> dict[str, Any]:
+        """Create or edit one. The schedule is validated before it is stored."""
+        from routines.engine import get_engine
+
+        return get_engine().save(raw)
+
+    def delete_routine(self, routine_id: str) -> dict[str, Any]:
+        from routines.engine import get_engine
+
+        return {"id": routine_id, "deleted": get_engine().store.delete(routine_id)}
+
+    def set_routine_enabled(self, routine_id: str, enabled: bool) -> dict[str, Any]:
+        from routines.engine import get_engine
+
+        return {"id": routine_id, "enabled": enabled,
+                "changed": get_engine().set_enabled(routine_id, enabled)}
+
+    def run_routine(self, routine_id: str) -> dict[str, Any]:
+        """Fire one now, from the panel.
+
+        Returns as soon as the job is queued. It runs on the same background
+        host the schedule uses, so pressing the button cannot block the page
+        or the conversation, and the result appears in the run history when
+        it is ready.
+        """
+        from routines.engine import get_engine
+
+        return {"id": routine_id, "job": get_engine().run_now(routine_id)}
+
+    def routine_runs(self, routine_id: str = "", limit: int = 20) -> list[dict[str, Any]]:
+        from routines.engine import get_engine
+
+        return get_engine().store.runs(routine_id, limit=limit)
+
     def _rulebook(self) -> Any:
         try:
             from jarvis.core.rules import RuleBook
@@ -436,6 +490,19 @@ class Control:
 
     # -- everything at once ------------------------------------------------ #
 
+    def _routines_for_state(self) -> dict[str, Any]:
+        """The routines, folded into the one call that draws the whole panel.
+
+        Wrapped because `state` is what the page loads with: one broken
+        import here should cost the Rules tab its routine list, not cost the
+        settings page every other tab as well.
+        """
+        try:
+            return self.routines()
+        except Exception as exc:
+            return {"routines": [], "actions": [], "summary": {},
+                    "recent": [], "error": str(exc)}
+
     def state(self) -> dict[str, Any]:
         return {
             "settings": self.get_settings(),
@@ -452,6 +519,7 @@ class Control:
             "costs": self.costs(),
             "orders": self.orders(),
             "lessons": self.lessons(),
+            "routines": self._routines_for_state(),
             "authorisations": AUTHORISATIONS,
         }
 
@@ -588,6 +656,22 @@ class _Handler(BaseHTTPRequestHandler):
                                      str(body.get("steps", "")))
             if method == "DELETE" and rest:
                 return control.unlearn(rest[0])   # _route already unquoted it
+
+        if head == "routines":
+            if method == "GET":
+                if rest[:1] == ["runs"]:
+                    return control.routine_runs(rest[1] if rest[1:] else "")
+                return control.routines()
+            if method == "POST":
+                body = self._body()
+                if rest[1:2] == ["run"]:
+                    return control.run_routine(rest[0])
+                if rest[1:2] == ["enabled"]:
+                    return control.set_routine_enabled(
+                        rest[0], bool(body.get("enabled", True)))
+                return control.save_routine(body)
+            if method == "DELETE" and rest:
+                return control.delete_routine(rest[0])
 
         if head == "costs" and method == "GET":
             return control.costs()
