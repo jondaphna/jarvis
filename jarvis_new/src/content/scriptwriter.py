@@ -26,6 +26,7 @@ Two failure modes get real handling rather than an exception:
 
 from __future__ import annotations
 
+import inspect
 import json
 import re
 from typing import Any
@@ -126,7 +127,7 @@ class Scriptwriter:
         system = SYSTEM + "\n\n" + profile.as_prompt_block()
         prompt = self._prompt(topic, count, profile, extra)
 
-        scripts = self._parse(backend.ask(system, prompt, "medium"),
+        scripts = self._parse(_ask(backend, system, prompt, _room(count)),
                               topic, profile.name)
         kept = _usable(scripts)
 
@@ -138,7 +139,7 @@ class Scriptwriter:
             short = count - len(kept)
             retry = self._retry_prompt(topic, short, profile, extra,
                                        scripts, count, kept)
-            second = self._parse(backend.ask(system, retry, "medium"),
+            second = self._parse(_ask(backend, system, retry, _room(short)),
                                  topic, profile.name)
             # Merged, not replaced. The old version swapped the whole batch
             # for the second attempt's, so two good scripts from the first
@@ -224,6 +225,39 @@ class Scriptwriter:
             script = ReelScript.from_dict(item, topic=topic, style=style)
             scripts.append(_tidy(script))
         return scripts
+
+
+#: Roughly what one script costs in output tokens, with its beats, caption and
+#: hashtags, plus a fixed allowance for the array around them. Measured on the
+#: shipped prompt rather than guessed: a five-script batch runs to about six
+#: thousand, which is why the conversation's 4096 used to cut it off.
+TOKENS_PER_SCRIPT = 1400
+TOKENS_OVERHEAD = 600
+
+
+def _room(count: int) -> int:
+    """How much room to ask for, given how many scripts are wanted."""
+    return TOKENS_OVERHEAD + TOKENS_PER_SCRIPT * max(1, int(count))
+
+
+def _ask(backend: Any, system: str, prompt: str, room: int) -> str:
+    """Ask for a structured answer, however much of that this brain supports.
+
+    Telling the provider the answer must be JSON removes most of the parse
+    failures, and saying how long it may be removes most of the truncations.
+    Neither is available on every backend, and the backends the tests inject
+    are plain objects with one `ask` method, so this asks for the better call
+    and falls back to the plain one rather than requiring it.
+    """
+    asker = getattr(backend, "ask_json", None)
+    if callable(asker):
+        try:
+            inspect.signature(asker).bind(system, prompt, "medium", room)
+        except (TypeError, ValueError):
+            asker = None                      # not the method this expects
+    if asker is not None:
+        return asker(system, prompt, "medium", room)
+    return backend.ask(system, prompt, "medium")
 
 
 def _usable(scripts: list[ReelScript]) -> list[ReelScript]:
