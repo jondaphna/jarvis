@@ -51,6 +51,11 @@ HISTORY = 40
 #: Statuses a job will never leave. Used to decide what may be forgotten.
 FINAL = ("done", "failed", "cancelled")
 
+#: How long to wait before the first retry of a job that asked for one, and
+#: the longest that wait may grow to as it doubles.
+RETRY_BACKOFF = 2.0
+RETRY_CEILING = 30.0
+
 
 async def _guard(coro: Any, label: str) -> None:
     """Run a spawned daemon and say something if it dies.
@@ -85,13 +90,23 @@ class Job:
     #: job it has already been told to drop can tell the difference between
     #: "you were cancelled" and "the whole host is shutting down".
     cancel_requested: bool = False
+    #: How many times the work has been run, and how many times it may be.
+    #: A content job spends most of its life waiting on somebody else's API,
+    #: and the usual way that fails is a 503 that would have worked a second
+    #: later - which, before this, threw away the whole job.
+    attempts: int = 0
+    max_attempts: int = 1
 
     def as_dict(self) -> dict[str, Any]:
         seconds = 0.0
         if self.started_at:
             seconds = round((self.finished_at or time.time()) - self.started_at, 1)
-        return {"ref": self.ref, "name": self.name, "status": self.status,
-                "seconds": seconds, "error": self.error}
+        row = {"ref": self.ref, "name": self.name, "status": self.status,
+               "seconds": seconds, "error": self.error}
+        if self.max_attempts > 1:
+            row["attempts"] = self.attempts
+            row["max_attempts"] = self.max_attempts
+        return row
 
 
 class WorkerHost:
@@ -185,6 +200,7 @@ class WorkerHost:
     # ------------------------------------------------------------------ #
 
     def submit(self, work: Callable[..., Any], *args: Any, name: str = "",
+               retries: int = 0, backoff: float = RETRY_BACKOFF,
                **kwargs: Any) -> str | None:
         """Queue a job and return its reference straight away.
 
@@ -192,6 +208,12 @@ class WorkerHost:
         blocking one is run in a thread so it cannot hold the worker loop
         either. Returns None only when the host could not be started at all,
         which the caller should report rather than pretend away.
+
+        `retries` is how many *extra* attempts a failure may have, with a
+        delay of `backoff` seconds doubling each time. It is off by default:
+        a retry is only ever right for work that is safe to run twice, and
+        the caller is the only one who knows whether it is. Cancelling is
+        never retried, and neither is a job the host is shutting down under.
         """
         if not self.running and not self.start():
             return None
@@ -199,14 +221,16 @@ class WorkerHost:
         if loop is None or queue is None:
             return None
 
-        job = Job(ref=uuid.uuid4().hex[:12], name=name or getattr(work, "__name__", "job"))
+        job = Job(ref=uuid.uuid4().hex[:12],
+                  name=name or getattr(work, "__name__", "job"),
+                  max_attempts=max(1, int(retries) + 1))
         with self._lock:
             self._jobs[job.ref] = job
             self._order.append(job.ref)
             self._trim()
 
         def push() -> None:
-            queue.put_nowait((job, work, args, kwargs))
+            queue.put_nowait((job, work, args, kwargs, max(0.0, float(backoff))))
 
         try:
             loop.call_soon_threadsafe(push)
@@ -275,15 +299,17 @@ class WorkerHost:
         queue = self._queue
         assert queue is not None
         while True:
-            job, work, args, kwargs = await queue.get()
+            job, work, args, kwargs, backoff = await queue.get()
             try:
-                await self._run_one(job, work, args, kwargs)
+                await self._run_one(job, work, args, kwargs, backoff)
             finally:
                 queue.task_done()
 
     async def _run_one(self, job: Job, work: Callable[..., Any],
-                       args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
-        """Run one job, and leave it in a final state whatever happens.
+                       args: tuple[Any, ...], kwargs: dict[str, Any],
+                       backoff: float = RETRY_BACKOFF) -> None:
+        """Run one job, retrying a failure if it was allowed any, and leave it
+        in a final state whatever happens.
 
         The work goes in a task of its own rather than being awaited inline.
         That is what makes `cancel()` possible: cancelling the inner task
@@ -297,36 +323,63 @@ class WorkerHost:
             return
 
         self._set(job, status="running", started_at=time.time())
-        if inspect.iscoroutinefunction(work):
-            inner = asyncio.ensure_future(work(*args, **kwargs))
-        else:
-            # A blocking call on this loop would stall every other background
-            # job behind it, which is the same bug as blocking the voice loop,
-            # one layer down.
-            inner = asyncio.ensure_future(asyncio.to_thread(work, *args, **kwargs))
-        self._current[job.ref] = inner
+        delay = backoff
 
-        try:
-            result = await inner
-        except asyncio.CancelledError:
-            self._set(job, status="cancelled", finished_at=time.time())
-            # Only the job was cancelled: the worker carries on to the next
-            # one. If the host is going down, the worker's own task is
-            # cancelled too and that propagates from the await in _worker.
-            if job.cancel_requested:
-                return
-            raise
-        except Exception as exc:
-            self._set(job, status="failed", finished_at=time.time(),
-                      error=f"{type(exc).__name__}: {exc}")
-            # Printed rather than swallowed: a background job that fails
-            # silently is a business that quietly stops working.
-            print(f"  [worker] {job.name} failed: {job.error}")
-            print("  " + traceback.format_exc().replace("\n", "\n  ").strip())
-        else:
-            self._set(job, status="done", finished_at=time.time(), result=result)
-        finally:
-            self._current.pop(job.ref, None)
+        while True:
+            self._set(job, attempts=job.attempts + 1)
+            if inspect.iscoroutinefunction(work):
+                inner = asyncio.ensure_future(work(*args, **kwargs))
+            else:
+                # A blocking call on this loop would stall every other
+                # background job behind it, which is the same bug as blocking
+                # the voice loop, one layer down.
+                inner = asyncio.ensure_future(
+                    asyncio.to_thread(work, *args, **kwargs))
+            self._current[job.ref] = inner
+
+            try:
+                result = await inner
+            except asyncio.CancelledError:
+                self._set(job, status="cancelled", finished_at=time.time())
+                # Only the job was cancelled: the worker carries on to the
+                # next one. If the host is going down, the worker's own task
+                # is cancelled too and that propagates from the await in
+                # _worker.
+                if job.cancel_requested:
+                    return
+                raise
+            except Exception as exc:
+                reason = f"{type(exc).__name__}: {exc}"
+                more = job.attempts < job.max_attempts and not job.cancel_requested
+                if more:
+                    print(f"  [worker] {job.name} failed on attempt "
+                          f"{job.attempts} of {job.max_attempts} ({reason}); "
+                          f"retrying in {delay:.0f}s")
+                    self._set(job, error=reason)
+                    self._current.pop(job.ref, None)
+                    try:
+                        await asyncio.sleep(delay)
+                    except asyncio.CancelledError:
+                        self._set(job, status="cancelled",
+                                  finished_at=time.time())
+                        raise
+                    # Doubling rather than a fixed wait: whatever is failing
+                    # is usually either momentary or not going to be fixed by
+                    # asking again immediately.
+                    delay = min(delay * 2, RETRY_CEILING)
+                    continue
+                self._set(job, status="failed", finished_at=time.time(),
+                          error=reason)
+                # Printed rather than swallowed: a background job that fails
+                # silently is a business that quietly stops working.
+                print(f"  [worker] {job.name} failed: {job.error}")
+                print("  " + traceback.format_exc().replace("\n", "\n  ").strip())
+            else:
+                self._set(job, status="done", finished_at=time.time(),
+                          result=result, error="")
+            finally:
+                self._current.pop(job.ref, None)
+            return
 
     # ------------------------------------------------------------------ #
     # Looking at it

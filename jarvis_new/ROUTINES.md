@@ -218,6 +218,7 @@ A briefing missed for a week fires **once**, not seven times.
 | `src/routines/actions.py` | What a routine actually does. |
 | `src/routines/engine.py` | Arming, claiming, firing, the ticker, the prompt blocks. |
 | `src/workers.py` | `spawn()` — a long-lived task beside the job queue. |
+| `src/db.py` | The connection this store shares with the content store. |
 | `src/agent.py` | `start_routines()` and the prompt blocks. |
 | `src/control_api.py` | `/api/routines`, `…/run`, `…/enabled`, `…/runs`. |
 | `src/doctor.py` | `check_routines()`. |
@@ -255,9 +256,11 @@ The budget is 20 ms. `tests/test_latency.py` fails the build below it.
 | --- | --- | --- |
 | `tests/test_routines_cron.py` | 79 | Parsing, next-firing arithmetic, the OR rule, impossible dates |
 | `tests/test_routines_store.py` | 40 | Persistence, the claim under eight threads, trimming, delivery |
-| `tests/test_routines_engine.py` | 55 | Arming, firing, catch-up, restart survival, double fire, the ticker |
-| `tests/test_routines_actions.py` | 35 | Every action, and every way it degrades |
+| `tests/test_routines_engine.py` | 57 | Arming, firing, catch-up, restart survival, double fire, the ticker |
+| `tests/test_routines_actions.py` | 49 | Every action, and every way it degrades |
 | `tests/test_routines_wiring.py` | 26 | That it is actually joined up to agent, API and doctor |
+| `tests/test_recovery.py` | 20 | A run abandoned by a process that died, and the summary it leaves on the routine |
+| `tests/test_db_pool.py` | 37 | The connection underneath all of it |
 
 Two of them were run against deliberately broken implementations to confirm
 they discriminate:

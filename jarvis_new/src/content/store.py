@@ -35,6 +35,12 @@ REPO = Path(__file__).resolve().parents[3]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+SRC = Path(__file__).resolve().parents[1]
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+import db  # noqa: E402  - needs the path above
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS content_jobs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,7 +55,8 @@ CREATE TABLE IF NOT EXISTS content_jobs (
     started_at  TEXT,
     finished_at TEXT,
     error       TEXT NOT NULL DEFAULT '',
-    result      TEXT
+    result      TEXT,
+    owner       TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_content_jobs_created
     ON content_jobs(created_at DESC);
@@ -102,7 +109,8 @@ class ContentStore:
 
     def __init__(self, db_path: Path | str | None = None) -> None:
         self._explicit = Path(db_path) if db_path else None
-        self._local = threading.local()
+        #: One migration check per thread rather than per query.
+        self._local_flag = threading.local()
 
     # ------------------------------------------------------------------ #
     # Connection
@@ -117,31 +125,22 @@ class ContentStore:
         return paths.DB_FILE
 
     def connection(self) -> sqlite3.Connection:
-        conn = getattr(self._local, "conn", None)
-        if conn is not None:
-            return conn
-        target = self.path()
-        target.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(target), timeout=15.0)
-        conn.row_factory = sqlite3.Row
-        # WAL so a long write in the worker thread never blocks a read from
-        # the voice thread, which is the one that has somebody waiting on it.
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=15000")
-        # Cheap and idempotent, so every thread's first connection runs it
-        # rather than depending on a flag that says somebody else already did.
-        conn.executescript(SCHEMA)
-        conn.commit()
-        self._local.conn = conn
+        """This thread's handle, shared with anything else using the same file.
+
+        WAL so a long write in the worker thread never blocks a read from the
+        voice thread, which is the one that has somebody waiting on it. Both
+        pragmas and the pooling live in `db`, so the routines store on this
+        thread gets the same handle rather than a second one to the same file.
+        """
+        conn = db.connect(self.path(), SCHEMA)
+        if not getattr(self._local_flag, "migrated", False):
+            db.ensure_columns(conn, "content_jobs",
+                              {"owner": "TEXT NOT NULL DEFAULT ''"})
+            self._local_flag.migrated = True
         return conn
 
     def close(self) -> None:
-        conn = getattr(self._local, "conn", None)
-        if conn is not None:
-            try:
-                conn.close()
-            finally:
-                self._local.conn = None
+        db.close_path(self.path())
 
     # ------------------------------------------------------------------ #
     # Jobs
@@ -163,9 +162,9 @@ class ContentStore:
             try:
                 conn.execute(
                     "INSERT INTO content_jobs(ref, kind, topic, style, account, "
-                    "status, created_at) VALUES(?,?,?,?,?,?,?)",
+                    "status, created_at, owner) VALUES(?,?,?,?,?,?,?,?)",
                     (candidate, kind, topic.strip(), style.strip(),
-                     account.strip(), STATUS_QUEUED, _now()))
+                     account.strip(), STATUS_QUEUED, _now(), db.process_tag()))
             except sqlite3.IntegrityError:
                 if supplied or attempt == 2:
                     raise
@@ -177,9 +176,43 @@ class ContentStore:
     def start_job(self, ref: str, stage: str = "") -> None:
         conn = self.connection()
         conn.execute(
-            "UPDATE content_jobs SET status=?, stage=?, started_at=? WHERE ref=?",
-            (STATUS_RUNNING, stage, _now(), ref))
+            "UPDATE content_jobs SET status=?, stage=?, started_at=?, owner=? "
+            "WHERE ref=?",
+            (STATUS_RUNNING, stage, _now(), db.process_tag(), ref))
         conn.commit()
+
+    # ------------------------------------------------------------------ #
+    # Recovery
+    # ------------------------------------------------------------------ #
+
+    def recover_interrupted(self) -> list[str]:
+        """Close off jobs whose process died, and say which.
+
+        A job row is written before the work starts and updated when it ends.
+        If the process is killed in between - a reboot, a crash, closing the
+        window on a render - the row stays on "running" forever. The status
+        tool then reports work in progress that nothing is doing, and a job
+        reference somebody was given never resolves.
+
+        Ownership is a process id paired with that process's start time, so
+        this can tell a job abandoned by a dead process from one another
+        running copy is working on right now. Only the abandoned are touched.
+        """
+        conn = self.connection()
+        rows = conn.execute(
+            "SELECT ref, owner, status FROM content_jobs WHERE status IN (?,?)",
+            (STATUS_QUEUED, STATUS_RUNNING)).fetchall()
+        orphans = [row["ref"] for row in rows if not db.is_alive(row["owner"])]
+        for ref in orphans:
+            conn.execute(
+                "UPDATE content_jobs SET status=?, finished_at=?, error=? "
+                "WHERE ref=?",
+                (STATUS_FAILED, _now(),
+                 "interrupted - the process running this job stopped before it "
+                 "finished", ref))
+        if orphans:
+            conn.commit()
+        return orphans
 
     def set_stage(self, ref: str, stage: str) -> None:
         conn = self.connection()

@@ -31,6 +31,12 @@ REPO = Path(__file__).resolve().parents[3]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+SRC = Path(__file__).resolve().parents[1]
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+import db  # noqa: E402  - needs the path above
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS routines (
     id            TEXT PRIMARY KEY,
@@ -67,7 +73,8 @@ CREATE TABLE IF NOT EXISTS routine_runs (
     status      TEXT NOT NULL DEFAULT 'running',
     output      TEXT NOT NULL DEFAULT '',
     error       TEXT NOT NULL DEFAULT '',
-    delivered   INTEGER NOT NULL DEFAULT 0
+    delivered   INTEGER NOT NULL DEFAULT 0,
+    owner       TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_routine_runs_routine
     ON routine_runs(routine_id, id DESC);
@@ -134,7 +141,8 @@ class RoutineStore:
 
     def __init__(self, db_path: Path | str | None = None) -> None:
         self._explicit = Path(db_path) if db_path else None
-        self._local = threading.local()
+        #: One migration check per thread rather than per query.
+        self._local_flag = threading.local()
 
     # ------------------------------------------------------------------ #
     # Connection
@@ -149,27 +157,16 @@ class RoutineStore:
         return paths.DB_FILE
 
     def connection(self) -> sqlite3.Connection:
-        conn = getattr(self._local, "conn", None)
-        if conn is not None:
-            return conn
-        target = self.path()
-        target.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(target), timeout=15.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=15000")
-        conn.executescript(SCHEMA)
-        conn.commit()
-        self._local.conn = conn
+        """This thread's handle, shared with the content store on the same file."""
+        conn = db.connect(self.path(), SCHEMA)
+        if not getattr(self._local_flag, "migrated", False):
+            db.ensure_columns(conn, "routine_runs",
+                              {"owner": "TEXT NOT NULL DEFAULT ''"})
+            self._local_flag.migrated = True
         return conn
 
     def close(self) -> None:
-        conn = getattr(self._local, "conn", None)
-        if conn is not None:
-            try:
-                conn.close()
-            finally:
-                self._local.conn = None
+        db.close_path(self.path())
 
     # ------------------------------------------------------------------ #
     # Definitions
@@ -298,10 +295,38 @@ class RoutineStore:
         conn = self.connection()
         cursor = conn.execute(
             "INSERT INTO routine_runs(routine_id, job_ref, trigger, due_at, "
-            "started_at, status) VALUES(?,?,?,?,?,?)",
-            (routine_id, job_ref, trigger, due_at, now_iso(), STATUS_RUNNING))
+            "started_at, status, owner) VALUES(?,?,?,?,?,?,?)",
+            (routine_id, job_ref, trigger, due_at, now_iso(), STATUS_RUNNING,
+             db.process_tag()))
         conn.commit()
         return int(cursor.lastrowid or 0)
+
+    def recover_interrupted(self) -> list[int]:
+        """Close off runs whose process died. Returns the run ids it closed.
+
+        Same problem as the content store's, with a sharper edge: a routine
+        left on "running" is also a routine whose summary row still says
+        running, so the panel shows a briefing that has been in progress since
+        Tuesday.
+        """
+        conn = self.connection()
+        rows = conn.execute(
+            "SELECT id, routine_id, owner FROM routine_runs WHERE status=?",
+            (STATUS_RUNNING,)).fetchall()
+        orphans = [row for row in rows if not db.is_alive(row["owner"])]
+        reason = ("interrupted - the process running this routine stopped "
+                  "before it finished")
+        for row in orphans:
+            with conn:
+                conn.execute(
+                    "UPDATE routine_runs SET status=?, finished_at=?, error=? "
+                    "WHERE id=?",
+                    (STATUS_FAILED, now_iso(), reason, row["id"]))
+                conn.execute(
+                    "UPDATE routines SET last_status=?, last_error=? "
+                    "WHERE id=? AND last_status=?",
+                    (STATUS_FAILED, reason, row["routine_id"], STATUS_RUNNING))
+        return [int(row["id"]) for row in orphans]
 
     def finish_run(self, run_id: int, routine_id: str, status: str,
                    output: str = "", error: str = "") -> None:

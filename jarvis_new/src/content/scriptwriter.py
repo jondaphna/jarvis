@@ -121,32 +121,37 @@ class Scriptwriter:
         if note:
             print(f"  [content] {note}")
 
+        # Built once. `as_prompt_block` reads the style file, and the retry
+        # below would otherwise read and re-render the whole thing again.
+        system = SYSTEM + "\n\n" + profile.as_prompt_block()
         prompt = self._prompt(topic, count, profile, extra)
-        raw = backend.ask(SYSTEM + "\n\n" + profile.as_prompt_block(), prompt,
-                          "medium")
-        scripts = self._parse(raw, topic, profile.name)
+
+        scripts = self._parse(backend.ask(system, prompt, "medium"),
+                              topic, profile.name)
+        kept = _usable(scripts)
 
         # One honest retry. A model that ignored the shape once usually obeys
         # when the problem is named; a model that ignores it twice is not
         # going to be argued into it, and pretending otherwise burns the
         # user's quota on a loop.
-        if not scripts or not all(script.is_usable() for script in scripts):
-            problems = self._problems(scripts, count)
-            retry = (f"{prompt}\n\nYour previous answer was rejected: "
-                     f"{problems}. Return ONLY the JSON array described above.")
-            raw = backend.ask(SYSTEM + "\n\n" + profile.as_prompt_block(), retry,
-                              "medium")
-            second = self._parse(raw, topic, profile.name)
-            if second and sum(s.is_usable() for s in second) >= sum(
-                    s.is_usable() for s in scripts):
-                scripts = second
+        if len(kept) < count:
+            short = count - len(kept)
+            retry = self._retry_prompt(topic, short, profile, extra,
+                                       scripts, count, kept)
+            second = self._parse(backend.ask(system, retry, "medium"),
+                                 topic, profile.name)
+            # Merged, not replaced. The old version swapped the whole batch
+            # for the second attempt's, so two good scripts from the first
+            # pass and two from the second came out as two - the user asked
+            # for three, the model wrote four usable ones between them, and
+            # the code threw half of them away.
+            kept = _merge(kept, _usable(second), count)
 
-        usable = [script for script in scripts if script.is_usable()]
-        if not usable:
+        if not kept:
             raise RuntimeError(
                 "The model didn't produce a usable script - "
                 + (self._problems(scripts, count) or "it returned nothing"))
-        return usable
+        return kept
 
     # ------------------------------------------------------------------ #
 
@@ -162,6 +167,28 @@ class Scriptwriter:
                 "different hook, different angle on the topic. Three variations "
                 "of one sentence is one script, not three.")
         return "\n".join(parts)
+
+    def _retry_prompt(self, topic: str, short: int, profile: Any, extra: str,
+                      scripts: list[ReelScript], wanted: int,
+                      kept: list[ReelScript]) -> str:
+        """Ask again for what is actually missing, not for the whole batch.
+
+        If two of three came back fine, asking for three more is asking the
+        model to redo work that was already good - it costs a longer answer,
+        a longer wait, and usually a worse result, because the model has to
+        find five angles on the topic instead of one.
+        """
+        base = self._prompt(topic, short, profile, extra)
+        problems = self._problems(scripts, wanted)
+        lines = [base, "", f"Your previous answer was rejected: {problems}."]
+        if kept:
+            already = "; ".join(f'"{script.hook}"' for script in kept)
+            lines.append(
+                f"{len(kept)} script(s) from that answer were kept, opening "
+                f"with: {already}. Write {short} more that open differently "
+                f"from those and from each other.")
+        lines.append("Return ONLY the JSON array described above.")
+        return "\n".join(lines)
 
     def _problems(self, scripts: list[ReelScript], wanted: int) -> str:
         if not scripts:
@@ -197,6 +224,32 @@ class Scriptwriter:
             script = ReelScript.from_dict(item, topic=topic, style=style)
             scripts.append(_tidy(script))
         return scripts
+
+
+def _usable(scripts: list[ReelScript]) -> list[ReelScript]:
+    return [script for script in scripts if script.is_usable()]
+
+
+def _merge(first: list[ReelScript], second: list[ReelScript],
+           limit: int) -> list[ReelScript]:
+    """Everything usable from both attempts, in order, without repeats.
+
+    Repeats are real: a model asked again for what it got wrong will often
+    hand back one of the ones it already got right. Matching on the hook
+    catches that without rejecting two scripts that merely cover the same
+    topic, which is what was asked for.
+    """
+    out: list[ReelScript] = []
+    seen: set[str] = set()
+    for script in [*first, *second]:
+        mark = " ".join((script.hook or "").lower().split())
+        if mark and mark in seen:
+            continue
+        seen.add(mark)
+        out.append(script)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _tidy(script: ReelScript) -> ReelScript:
@@ -247,9 +300,68 @@ def _candidates(text: str) -> list[str]:
     fence = _FENCE.search(text)
     if fence:
         found.append(fence.group(1).strip())
-    for opener, closer in (("[", "]"), ("{", "}")):
+    # Order matters. The widest [ ... ] span first, then a salvaged array,
+    # and only then the widest { ... } span: a truncated batch whose first
+    # element happens to parse on its own would otherwise come back as one
+    # script, silently, when the rest were recoverable.
+    for opener, closer in (("[", "]"),):
         start = text.find(opener)
         end = text.rfind(closer)
         if start != -1 and end > start:
             found.append(text[start:end + 1])
+    salvaged = _salvage_truncated(text)
+    if salvaged:
+        found.append(salvaged)
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        found.append(text[start:end + 1])
     return found
+
+
+def _salvage_truncated(text: str) -> str:
+    """Close an array the model was cut off in the middle of writing.
+
+    This is the most expensive failure the scriptwriter has, and the one most
+    likely to happen on exactly the batches worth having: five scripts is a
+    long answer, a long answer is the one that hits the output token limit,
+    and the result is four perfectly good scripts thrown away because the
+    fifth stops mid-sentence and the whole thing fails to parse.
+
+    So: walk the array, remember where each complete element ended, and take
+    everything up to the last one. Nothing is invented - a half-written
+    script is dropped, not guessed at.
+    """
+    start = text.find("[")
+    if start == -1:
+        return ""
+
+    depth = 0
+    in_string = False
+    escaped = False
+    last_complete = -1
+
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+        elif char in "]}":
+            depth -= 1
+            if depth == 1:
+                # An element of the outer array just closed.
+                last_complete = index
+            elif depth == 0:
+                return ""            # it was complete after all; nothing to do
+
+    if last_complete == -1:
+        return ""
+    return text[start:last_complete + 1] + "]"

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import contextlib
 import shutil
+import sqlite3
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -37,6 +38,9 @@ from . import styles
 from .models import ReelScript
 from .scriptwriter import Scriptwriter
 from .store import KIND_SCRIPT, ContentStore, new_ref, store
+
+#: Extra attempts a script job gets. See `queue_scripts` for why it is safe.
+SCRIPT_RETRIES = 2
 
 
 @dataclass
@@ -79,12 +83,13 @@ class Stage:
                 gaps.append(f"{program} on PATH")
         return gaps
 
-    def ready(self) -> bool:
-        return self.implemented and not self.missing()
+    def ready(self, gaps: list[str] | None = None) -> bool:
+        gaps = self.missing() if gaps is None else gaps
+        return self.implemented and not gaps
 
-    def blocker(self) -> str:
+    def blocker(self, gaps: list[str] | None = None) -> str:
         """One phrase saying what stands between here and this stage running."""
-        gaps = self.missing()
+        gaps = self.missing() if gaps is None else gaps
         if self.implemented:
             return f"needs {_and_list(gaps)}" if gaps else ""
         if gaps:
@@ -92,10 +97,18 @@ class Stage:
         return "isn't built yet"
 
     def as_dict(self) -> dict[str, Any]:
+        """This stage, checked once.
+
+        `missing()` decrypts the key vault, imports packages and searches PATH
+        for programs. This used to call it three times - once directly, once
+        through `ready`, once through `blocker` - for each of six stages, on
+        every status call, and the status call is a voice tool.
+        """
+        gaps = self.missing()
         return {"key": self.key, "label": self.label, "detail": self.detail,
                 "implemented": self.implemented, "free": self.free,
-                "ready": self.ready(), "missing": self.missing(),
-                "blocker": self.blocker(), "plugin": self.plugin,
+                "ready": self.ready(gaps), "missing": gaps,
+                "blocker": self.blocker(gaps), "plugin": self.plugin,
                 "notes": self.notes}
 
 
@@ -275,9 +288,36 @@ def _script_job(ref: str, topic: str, count: int, style: str, extra: str,
     # it appears the moment there is something to edit it for.
     with contextlib.suppress(Exception):
         styles.write_starter_file()
-    db.create_job(topic=topic, kind=KIND_SCRIPT, style=style, account=account,
-                  ref=ref)
+    try:
+        db.create_job(topic=topic, kind=KIND_SCRIPT, style=style,
+                      account=account, ref=ref)
+    except sqlite3.IntegrityError:
+        # This is a retry of a job whose row already exists. Creating it again
+        # is the one thing here that is not repeatable, so it is the one thing
+        # that has to be allowed to have already happened - otherwise the
+        # second attempt fails on the bookkeeping rather than on the work.
+        if db.job(ref) is None:
+            raise
     return run_script_job(ref, topic, count, style, extra, db=db)
+
+
+def recover_interrupted(db: ContentStore | None = None) -> list[str]:
+    """Close off content jobs abandoned by a process that died.
+
+    Runs on a worker when the agent starts. Without it, a job that was in
+    flight when the machine was shut down stays "running" forever: the status
+    tool reports work in progress that nothing is doing, and the reference
+    somebody was given never resolves into anything.
+    """
+    try:
+        orphans = (db or store()).recover_interrupted()
+    except Exception as exc:
+        print(f"  [content] couldn't check for interrupted jobs: {exc}")
+        return []
+    if orphans:
+        print(f"  Content engine: closed {len(orphans)} job(s) interrupted by "
+              f"a previous shutdown.")
+    return orphans
 
 
 def queue_scripts(topic: str, count: int = 3, style: str = "", extra: str = "",
@@ -307,7 +347,14 @@ def queue_scripts(topic: str, count: int = 3, style: str = "", extra: str = "",
     ref = new_ref()
     queued = workers.host().submit(
         _script_job, ref, topic, count, style, extra, account, db,
-        name=f"scripts: {topic[:40]}")
+        name=f"scripts: {topic[:40]}",
+        # Writing a script is one call to somebody else's model, and the
+        # usual way that fails is a rate limit or a 503 that would have
+        # worked thirty seconds later. Two extra attempts costs nothing when
+        # the first succeeds and saves the whole job when it doesn't. It is
+        # safe to repeat: the work is a model call and a set of rows keyed by
+        # this reference, all of which the retry overwrites.
+        retries=SCRIPT_RETRIES)
     if queued is None:
         with contextlib.suppress(Exception):
             failed = db or store()
