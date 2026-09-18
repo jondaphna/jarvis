@@ -134,6 +134,7 @@ class RoutineEngine:
         self.tick_seconds = max(1.0, float(tick_seconds))
         self._task: Any = None
         self._lock = threading.RLock()
+        self._seed = True
         self.started = False
 
     # ------------------------------------------------------------------ #
@@ -307,7 +308,39 @@ class RoutineEngine:
     # The ticker
     # ------------------------------------------------------------------ #
 
+    def prepare(self) -> dict[str, Any]:
+        """Everything that has to happen once, before the first tick.
+
+        Deliberately not done in `start()`. `start()` is called from the voice
+        thread as a call opens, and this recovers rows, seeds a fresh database
+        and arms every routine - three lots of SQLite on the thread that has
+        somebody talking to it. Out here it runs on the worker instead, and
+        the call opens without waiting for any of it.
+        """
+        closed = self.store.recover_interrupted()
+        seeded = self.seed_defaults() if self._seed else 0
+        armed = self.arm()
+        if closed:
+            print(f"  Routines: closed {len(closed)} run(s) interrupted by a "
+                  f"previous shutdown.")
+        state = self.summary()
+        following = state["next"]
+        when = ""
+        if following:
+            moment = to_dt(str(following["at"]))
+            if moment:
+                when = (f", next is {following['name']} at "
+                        f"{moment.astimezone().strftime('%H:%M')}")
+        print(f"  Routines armed: {state['armed']} scheduled{when}.")
+        return {"recovered": len(closed), "seeded": seeded, "armed": armed}
+
     async def _tick_forever(self) -> None:
+        try:
+            await asyncio.to_thread(self.prepare)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"  [routines] could not be armed: {type(exc).__name__}: {exc}")
         while True:
             await asyncio.sleep(self.tick_seconds)
             try:
@@ -323,17 +356,16 @@ class RoutineEngine:
                 print(f"  [routines] tick failed: {type(exc).__name__}: {exc}")
 
     def start(self, seed: bool = True) -> bool:
-        """Arm everything and start ticking. Safe to call twice."""
+        """Start ticking. Safe to call twice.
+
+        Returns as soon as the ticker is on the loop. Recovery, seeding and
+        arming happen in `prepare()`, on the worker, because this is called
+        while somebody is waiting for a call to open.
+        """
         with self._lock:
             if self.started:
                 return True
-            try:
-                if seed:
-                    self.seed_defaults()
-                self.arm()
-            except Exception as exc:
-                print(f"  Routines could not be armed: {exc}")
-                return False
+            self._seed = seed
             task = self.host().spawn(self._tick_forever, name="routine-ticker")
             if task is None:
                 return False
@@ -486,23 +518,19 @@ def reset_engine() -> None:
 
 
 def start_routines() -> bool:
-    """Arm the routines and start the ticker. Called once when a call begins."""
+    """Start the routine ticker. Called once when a call begins.
+
+    Touches no database: what it costs the call is putting one task on the
+    worker loop. Everything else - recovering interrupted runs, seeding a
+    fresh install, arming the schedules - happens on the worker a moment
+    later, and prints what it found.
+    """
     try:
         started = get_engine().start()
     except Exception as exc:
         print(f"  Routines are not running: {exc}")
         return False
-    if started:
-        state = get_engine().summary()
-        following = state["next"]
-        when = ""
-        if following:
-            moment = to_dt(str(following["at"]))
-            if moment:
-                when = (f", next is {following['name']} at "
-                        f"{moment.astimezone().strftime('%H:%M')}")
-        print(f"  Routines armed: {state['armed']} scheduled{when}.")
-    else:
+    if not started:
         print("  Routines could not start; voice is unaffected.")
     return started
 

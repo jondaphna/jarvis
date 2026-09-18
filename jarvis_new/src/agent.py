@@ -20,6 +20,7 @@ import routines
 import workers
 from brain_memory import JarvisMemory
 from browser import BrowserManager
+from content.pipeline import recover_interrupted
 from content.tools import ContentStudio
 from control_api import serve_in_background
 from files import FileTools
@@ -201,6 +202,13 @@ async def my_agent(ctx: JobContext):
     # a minute of an assistant that has stopped listening.
     workers.start_workers()
     ctx.add_shutdown_callback(workers.stop_workers)
+
+    # Anything that was in flight when this machine last stopped. Done on a
+    # worker rather than here: it is several SQLite reads, and this is the
+    # thread the person is waiting on. A job abandoned by a dead process
+    # otherwise stays "running" forever, and the status tool keeps reporting
+    # work that nothing is doing.
+    workers.host().submit(recover_interrupted, name="recover interrupted jobs")
 
     # The standing routines - the morning briefing and anything else set up in
     # the settings panel. Armed here, ticking on the worker host, so they fire

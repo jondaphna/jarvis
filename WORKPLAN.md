@@ -102,6 +102,29 @@ The links live in the file rather than the prompt because nothing in this
 codebase can open instagram.com — the network refuses it — and a model handed
 a link it cannot fetch describes what it imagines it found.
 
+### The unglamorous pass: crashes, retries, and doing work once ✅
+
+Three ordinary failures this build used to handle badly. A job whose process
+was killed mid-render stayed on "running" for ever, so the status tool reported
+work nothing was doing — now every job and routine run is stamped with the
+process that owns it (id *and* start time, because ids are reused), and
+start-up closes off anything owned by a process that is provably gone, while
+leaving alone anything another running copy holds. A background job that hit a
+rate limit was simply gone — background work can now ask for retries with a
+wait that doubles, off by default because only the caller knows whether its
+work is safe to run twice. And both stores opened their own handle to the same
+`jarvis.db` on every thread, which is twice as much of the one thing this
+codebase has actually been bitten by; there is now one connection per file per
+thread.
+
+Alongside it, the work that was being done three or four times behind a tool
+the voice calls while somebody waits: the house style file was read and parsed
+four times per scriptwriting prompt, and each pipeline stage decrypted the key
+vault and searched PATH three times per status call. The status tool went from
+0.90 ms to 0.57 ms. A truncated batch of scripts is also no longer thrown away
+whole — the complete ones are kept, and nothing is invented for the one that
+was cut off. Full write-up in `jarvis_new/RELIABILITY.md`.
+
 ### The browser, which everything else leans on ✅
 
 Jarvis opens an ordinary Chrome and attaches to it. That means one window, the

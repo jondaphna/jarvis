@@ -207,11 +207,51 @@ class TestBatching:
 
     def test_a_partial_batch_is_returned_rather_than_thrown_away(self, home):
         """Two good scripts out of three asked for is two scripts, not nothing."""
-        half = [GOOD, dict(GOOD, hook=""), GOOD]
+        half = [dict(GOOD, hook="The first hook, which is a real one."),
+                dict(GOOD, hook=""),
+                dict(GOOD, hook="The second hook, also real.")]
         backend = FakeBackend(json.dumps(half), json.dumps(half))
         scripts = Scriptwriter(backend=backend).write("a topic", count=3)
         assert len(scripts) == 2
         assert all(script.is_usable() for script in scripts)
+
+    def test_the_two_attempts_are_added_together_not_swapped(self, home):
+        """Two usable from the first pass and two from the second is three
+        scripts when three were asked for - not two, which is what replacing
+        the batch wholesale used to give."""
+        first = [dict(GOOD, hook="Hook one."), dict(GOOD, hook="Hook two."),
+                 dict(GOOD, hook="")]
+        second = [dict(GOOD, hook="Hook three."), dict(GOOD, hook="Hook four.")]
+        backend = FakeBackend(json.dumps(first), json.dumps(second))
+        scripts = Scriptwriter(backend=backend).write("a topic", count=3)
+        assert [script.hook for script in scripts] == [
+            "Hook one.", "Hook two.", "Hook three."]
+
+    def test_the_retry_asks_only_for_what_is_missing(self, home):
+        first = [dict(GOOD, hook="Hook one."), dict(GOOD, hook="Hook two."),
+                 dict(GOOD, hook="")]
+        second = [dict(GOOD, hook="Hook three.")]
+        backend = FakeBackend(json.dumps(first), json.dumps(second))
+        Scriptwriter(backend=backend).write("a topic", count=3)
+        retry = backend.asked[1]["prompt"]
+        assert "array of 1 object" in retry
+        assert "Hook one." in retry          # so it does not repeat itself
+
+    def test_the_same_hook_twice_is_one_script(self, home):
+        """A model asked again for what it got wrong hands back what it got
+        right along with it. Shipping the same Reel twice is worse than
+        shipping one."""
+        same = [dict(GOOD, hook="Exactly the same hook.")]
+        backend = FakeBackend(json.dumps(same), json.dumps(same))
+        scripts = Scriptwriter(backend=backend).write("a topic", count=2)
+        assert len(scripts) == 1
+
+    def test_hooks_that_differ_only_in_spacing_are_the_same_hook(self, home):
+        first = [dict(GOOD, hook="A hook worth keeping.")]
+        second = [dict(GOOD, hook="  a   HOOK worth   keeping. ")]
+        backend = FakeBackend(json.dumps(first), json.dumps(second))
+        scripts = Scriptwriter(backend=backend).write("a topic", count=2)
+        assert len(scripts) == 1
 
 
 # --------------------------------------------------------------------------- #

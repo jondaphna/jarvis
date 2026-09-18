@@ -410,7 +410,24 @@ class TestTheTicker:
     def test_starting_it_arms_seeds_and_ticks(self, engine):
         assert engine.start() is True
         assert engine.started is True
-        assert engine.store.all()
+        # Seeding and arming happen on the worker, not on the caller's thread,
+        # so this waits rather than asserting into a race.
+        assert wait_for(lambda: engine.store.all())
+
+    def test_starting_it_does_no_database_work_on_the_caller(self, engine,
+                                                             monkeypatch):
+        """`start()` is called as a call opens, on the voice thread."""
+        def explode(*args, **kwargs):
+            raise AssertionError("start() touched the database")
+
+        monkeypatch.setattr(engine.store, "connection", explode)
+        assert engine.start() is True
+
+    def test_preparing_recovers_seeds_and_arms(self, engine):
+        report = engine.prepare()
+        assert report["seeded"] == 3
+        assert report["armed"] == 0        # seeding arms them as it saves them
+        assert report["recovered"] == 0
 
     def test_starting_twice_is_a_no_op(self, engine):
         engine.start()

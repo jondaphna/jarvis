@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import json
 import sys
+import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -251,9 +252,8 @@ def _answered(value: Any) -> bool:
 
 def references() -> list[dict[str, Any]]:
     """The reference slots as they stand on disk."""
-    try:
-        raw = json.loads(path().read_text("utf-8"))
-    except Exception:
+    raw = _read()
+    if raw is None:
         return blank_references()
     stored = raw.get("references") if isinstance(raw, dict) else None
     if not isinstance(stored, list):
@@ -294,6 +294,56 @@ def reference_block() -> str:
     return "\n".join(lines)
 
 
+_cache_lock = threading.Lock()
+#: (path, mtime_ns, size) -> the parsed file. One entry: the file is one file.
+_cached: tuple[tuple[str, int, int], Any] | None = None
+
+
+def _read() -> Any:
+    """The parsed style file, re-read only when it has actually changed.
+
+    This used to be four separate reads and four JSON parses for one
+    scriptwriting prompt - `get` reads it to load the profiles and again to
+    find the default name, `as_prompt_block` reads it again for the reference
+    slots, and the retry does the lot a second time. One of those calls is on
+    the voice path, inside the status tool, which is the place this codebase
+    has already been bitten once for doing file work.
+
+    Keyed on modification time and size rather than a timer, so editing the
+    file still takes effect on the next job with nothing to restart - which
+    is the property the whole "style is a file" design rests on.
+    """
+    global _cached
+    target = path()
+    try:
+        info = target.stat()
+        stamp = (str(target), info.st_mtime_ns, info.st_size)
+    except OSError:
+        with _cache_lock:
+            _cached = None
+        return None
+
+    with _cache_lock:
+        if _cached is not None and _cached[0] == stamp:
+            return _cached[1]
+
+    try:
+        parsed = json.loads(target.read_text("utf-8"))
+    except Exception:
+        parsed = None
+
+    with _cache_lock:
+        _cached = (stamp, parsed)
+    return parsed
+
+
+def forget() -> None:
+    """Drop the cached file. For tests, and for anything that rewrites it."""
+    global _cached
+    with _cache_lock:
+        _cached = None
+
+
 def load_all() -> dict[str, StyleProfile]:
     """Every profile on disk, falling back to the shipped one.
 
@@ -302,9 +352,8 @@ def load_all() -> dict[str, StyleProfile]:
     be read.
     """
     profiles: dict[str, StyleProfile] = {DEFAULT.name: DEFAULT}
-    try:
-        raw = json.loads(path().read_text("utf-8"))
-    except Exception:
+    raw = _read()
+    if raw is None:
         return profiles
 
     stored = raw.get("profiles") if isinstance(raw, dict) else None
@@ -321,8 +370,8 @@ def load_all() -> dict[str, StyleProfile]:
 
 def default_name() -> str:
     """Which profile a job uses when it doesn't name one."""
+    raw = _read()
     try:
-        raw = json.loads(path().read_text("utf-8"))
         chosen = str((raw or {}).get("default") or "").strip()
     except Exception:
         chosen = ""
@@ -390,4 +439,5 @@ def write_starter_file(force: bool = False) -> Path:
     }
     target.write_text(json.dumps(body, indent=2, ensure_ascii=False),
                       encoding="utf-8")
+    forget()
     return target

@@ -373,10 +373,11 @@ locked", raised at the person talking.
 | File | What it is |
 | --- | --- |
 | `src/workers.py` | The background host: a daemon thread with its own event loop and a job queue. Nothing here touches the voice loop. |
+| `src/db.py` | One SQLite connection per file per thread, the pragmas, and who owns a row. |
 | `src/content/styles.py` | The editable house style, and the prompt block built from it. |
 | `src/content/models.py` | A Reel script as a structured object — hook, timed beats, caption, hashtags. |
 | `src/content/scriptwriter.py` | The agent that writes it, on a free brain, with one honest retry. |
-| `src/content/store.py` | Jobs and assets, in `jarvis.db`, one connection per thread. |
+| `src/content/store.py` | Jobs and assets, in `jarvis.db`, on the shared connection, and closing off what a crash left behind. |
 | `src/content/pipeline.py` | The stages, what each one needs, and the job that runs today. |
 | `src/content/tools.py` | The three things the voice can ask for. |
 
@@ -387,6 +388,13 @@ locked", raised at the person talking.
 | `tests/test_content.py` | Script shape, job records, what the voice sees. |
 | `tests/test_content_edges.py` | Malformed model output, schema repair, database contention, the permission switch. |
 | `tests/test_latency.py` | The promise: tool latency and voice-loop lag under load. |
+| `tests/test_db_pool.py` | One connection per file per thread, and process ownership. |
+| `tests/test_recovery.py` | Jobs abandoned by a process that died, and the ones that must be left alone. |
+| `tests/test_workers_retry.py` | Retrying a failure that clears, and what is never retried. |
+| `tests/test_efficiency.py` | The work that used to be done three times, counted rather than timed. |
+
+What happens when a job's process dies, when an API fails for ten
+seconds, or when two stores open the same file, is in `RELIABILITY.md`.
 
 ## Why the background thread
 
