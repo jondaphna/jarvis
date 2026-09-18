@@ -188,6 +188,17 @@ def is_paid(model: str) -> bool:
 # The brains
 # --------------------------------------------------------------------------- #
 
+#: Room for a spoken answer. It is read out, so it is short by design.
+SPOKEN_MAX_TOKENS = 4096
+
+#: Room for a structured one. The same 4096 truncated a batch of five Reel
+#: scripts about two thirds of the way through the fifth, and a truncated
+#: batch is the most expensive failure the scriptwriter has: the long answer
+#: is the one that hits the limit, and the long answer is the batch worth
+#: having. Callers that know their own size should say so.
+JSON_MAX_TOKENS = 8192
+
+
 class Backend:
     """One brain Jarvis can hand a hard question to."""
 
@@ -200,6 +211,25 @@ class Backend:
 
     def ask(self, system: str, prompt: str, effort: str) -> str:
         raise NotImplementedError
+
+    def ask_json(self, system: str, prompt: str, effort: str = "medium",
+                 max_tokens: int = 0) -> str:
+        """The same question, with the provider told the answer must be JSON.
+
+        Background agents - the scriptwriter today, the rest of the pipeline
+        as it lands - ask for a structured answer and then have to parse
+        whatever comes back. Saying so in the prompt works most of the time;
+        saying so in the request works more of the time, and the difference is
+        a wasted model call, thirty seconds, and a slice of a free quota.
+
+        `max_tokens` is the room the answer gets. It matters for exactly one
+        reason: the batch that hits the limit is the long one, and the long
+        one is the batch worth having.
+
+        Providers with no such mode inherit this, which is the plain question.
+        Nothing here is on the voice path.
+        """
+        return self.ask(system, prompt, effort)
 
     @staticmethod
     def _text(value: Any) -> str:
@@ -276,22 +306,35 @@ class Ollama(Backend):
         return self.model() is not None
 
     def ask(self, system: str, prompt: str, effort: str) -> str:
+        return self._chat(system, prompt)
+
+    def ask_json(self, system: str, prompt: str, effort: str = "medium",
+                 max_tokens: int = 0) -> str:
+        return self._chat(system, prompt, as_json=True, max_tokens=max_tokens)
+
+    def _chat(self, system: str, prompt: str, as_json: bool = False,
+              max_tokens: int = 0) -> str:
         import requests
 
         model = self.model()
         if not model:
             raise ToolError("Ollama isn't running on this machine.")
+        payload: dict[str, Any] = {
+            "model": model,
+            "stream": False,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+        }
+        if as_json:
+            payload["format"] = "json"
+        if max_tokens > 0:
+            payload["options"] = {"num_predict": int(max_tokens)}
         try:
             response = requests.post(
                 f"{self.host()}/api/chat",
-                json={
-                    "model": model,
-                    "stream": False,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": prompt},
-                    ],
-                },
+                json=payload,
                 timeout=180,
             )
             response.raise_for_status()
@@ -362,13 +405,41 @@ class Gemini(Backend):
             return chosen
 
     def ask(self, system: str, prompt: str, effort: str) -> str:
+        return self._generate(system, prompt, max_tokens=SPOKEN_MAX_TOKENS)
+
+    def ask_json(self, system: str, prompt: str, effort: str = "medium",
+                 max_tokens: int = 0) -> str:
+        """Ask with the response type pinned to JSON.
+
+        Falls back to the plain request if the model refuses the mime type
+        rather than failing the job: a model that cannot be told the shape can
+        still be asked for it, and the parser handles what comes back. The
+        alternative - every script job failing because the chosen model is one
+        release behind - is a worse trade than one wasted call.
+        """
+        room = max_tokens if max_tokens > 0 else JSON_MAX_TOKENS
+        try:
+            return self._generate(system, prompt, max_tokens=room,
+                                  mime="application/json")
+        except ToolError as exc:
+            if "mime" not in str(exc).lower() and "response_mime" not in str(exc):
+                raise
+            print("  [thinker] this model won't be told to answer in JSON; "
+                  "asking plainly")
+            return self._generate(system, prompt, max_tokens=room)
+
+    def _generate(self, system: str, prompt: str, max_tokens: int,
+                  mime: str = "") -> str:
         from google.genai import types as genai_types
 
         client = self.client()
-        config = genai_types.GenerateContentConfig(
-            system_instruction=system,
-            max_output_tokens=4096,
-        )
+        options: dict[str, Any] = {
+            "system_instruction": system,
+            "max_output_tokens": max_tokens,
+        }
+        if mime:
+            options["response_mime_type"] = mime
+        config = genai_types.GenerateContentConfig(**options)
         try:
             response = client.models.generate_content(
                 model=self.model(), contents=prompt, config=config)

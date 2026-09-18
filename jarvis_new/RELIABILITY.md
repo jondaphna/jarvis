@@ -144,6 +144,45 @@ nothing to restart — the property the whole "style is a file" design rests on.
 
 ---
 
+## Asking for JSON, and saying how long it may be
+
+`Backend.ask_json()` in `src/thinker.py`
+
+Background agents ask for a structured answer and then parse whatever comes
+back. Saying so in the prompt works most of the time; saying so in the
+*request* works more of the time, and the difference is a wasted model call,
+thirty seconds, and a slice of a free daily quota.
+
+The length is the other half, and the more expensive one. The conversation's
+answer budget was four thousand tokens for everything, because a spoken answer
+is short. A batch of five Reel scripts with beats, captions and hashtags is
+not short — it runs to about six thousand — so the fifth script was cut off two
+thirds of the way through and the array failed to parse. That is the failure
+the salvage below exists to survive, and this is the one that stops it
+happening.
+
+```python
+backend.ask_json(system, prompt, "medium", max_tokens=room)
+```
+
+- **Gemini** gets `response_mime_type="application/json"` and the room asked
+  for. A model that refuses the mime type is asked plainly instead rather than
+  failing the job: a model one release behind must not break every script job.
+- **Ollama** gets `"format": "json"` and `num_predict`.
+- **Claude** has no JSON mode in its API, so it inherits the base
+  implementation, which is the plain question. A background agent can ask any
+  backend the same way regardless.
+- **A backend that has never heard of it** — every fake the tests inject — gets
+  the plain `ask()` it always got. The caller checks the signature rather than
+  requiring the method.
+
+The scriptwriter sizes the request to the batch, and a retry that needs one
+more script asks for one script's worth of room, not a batch's.
+
+`SPOKEN_MAX_TOKENS` is unchanged at 4096. Nothing here touches the voice path.
+
+---
+
 ## A truncated batch is no longer thrown away
 
 `scriptwriter._salvage_truncated()`
@@ -168,6 +207,7 @@ this path.
 | `tests/test_recovery.py` | 20 | What a crash leaves behind, what must not be touched, and that a broken database cannot stop the agent starting |
 | `tests/test_workers_retry.py` | 13 | Retrying, the growing wait, and everything that is never retried |
 | `tests/test_efficiency.py` | 17 | Counting the work rather than timing it: one file read, one check per stage, the salvage |
+| `tests/test_structured_answers.py` | 27 | The JSON request, the length budget, and every way a backend can not support them |
 
 Counting rather than timing is deliberate. A count is stable on a loaded
 machine; a timing assertion that flakes gets deleted, and the thing it was
