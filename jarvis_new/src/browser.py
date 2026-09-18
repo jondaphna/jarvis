@@ -171,8 +171,50 @@ def jarvis_profile_dir() -> Path:
 #: Punk" is how Spotify labels it, and strict matching between those is why the
 #: song never started.
 _CONTROL_NOUNS = ("button", "link", "icon", "control", "field", "box", "menu",
-                  "tab", "option", "item", "thing")
-_LEADING_WORDS = ("the ", "a ", "an ", "that ", "this ", "my ")
+                  "tab", "option", "item", "thing", "bar", "input", "slider",
+                  "toggle", "switch", "gear", "picker", "checkbox", "dropdown",
+                  "arrow", "panel", "area", "entry", "textbox", "widget",
+                  "tile", "card", "selector")
+_LEADING_WORDS = ("the ", "a ", "an ", "that ", "this ", "my ", "its ", "your ")
+
+#: The trailing nouns that mean "somewhere you type" rather than "something you
+#: press". Slack calls its composer "Message #general" and also has a "New
+#: message" button; "the message box" means the first and "the new message
+#: button" means the second, and the only thing telling them apart is the noun.
+_ENTRY_NOUNS = frozenset({"box", "bar", "field", "input", "textbox", "area", "entry"})
+
+#: Everything a click can land on. Sliders and switches are here because a
+#: volume control and an autoplay toggle are things people ask for by name, and
+#: leaving their roles out meant no variant of the phrase could ever match.
+_CLICKABLE_ROLES = ("button", "link", "tab", "menuitem", "menuitemcheckbox",
+                    "menuitemradio", "checkbox", "radio", "switch", "slider",
+                    "option", "combobox", "treeitem")
+_ENTRY_ROLES = ("textbox", "searchbox", "combobox")
+
+
+def _roles_in_order(*groups: tuple[str, ...]) -> tuple[str, ...]:
+    """The roles to search, first mention winning and no role listed twice.
+
+    Combobox is both a place you type and a thing you press, so it appears in
+    both groups; enumerating it twice would make one control look like two and
+    read as an ambiguous tie.
+    """
+    seen: dict[str, None] = {}
+    for group in groups:
+        for role in group:
+            seen.setdefault(role, None)
+    return tuple(seen)
+
+#: A page can carry hundreds of controls and each one read costs a round trip,
+#: so both of the scans that read labels stop well before a heavy page would
+#: make the assistant sit silent.
+_MOST_CONTROLS_WORTH_READING = 200
+_MOST_CANDIDATES_WORTH_READING = 25
+
+#: Words too common to identify a control on their own.
+_STOPWORDS = frozenset({"the", "a", "an", "to", "of", "and", "or", "in", "on",
+                        "for", "with", "by", "at", "is", "it", "all", "my",
+                        "this", "that", "your", "me", "about", "from", "new"})
 
 
 def target_variants(target: str) -> list[str]:
@@ -189,22 +231,54 @@ def target_variants(target: str) -> list[str]:
         return []
 
     variants = [original]
-    lowered = original.lower()
+    working = original.lower()
 
-    stripped = lowered
-    for word in _LEADING_WORDS:
-        if stripped.startswith(word):
-            stripped = stripped[len(word):].strip()
+    # Peel one word at a time, keeping every step: "the settings gear icon"
+    # gives up "icon", then "gear", leaving "settings", and any of the three
+    # may be the one the page actually used. Stripping only once, as this did
+    # before, meant a single unexpected word sank the whole phrase.
+    while True:
+        peeled = working
+        for word in _LEADING_WORDS:
+            if peeled.startswith(word) and peeled[len(word):].strip():
+                peeled = peeled[len(word):].strip()
+                break
+        else:
+            for noun in _CONTROL_NOUNS:
+                if peeled.endswith(" " + noun) and peeled[: -len(noun)].strip():
+                    peeled = peeled[: -len(noun)].strip()
+                    break
+        if peeled == working:
             break
+        working = peeled
+        variants.append(working)
 
-    for noun in _CONTROL_NOUNS:
-        if stripped.endswith(" " + noun):
-            stripped = stripped[: -len(noun)].strip()
-            break
-
-    if stripped and stripped != lowered:
-        variants.append(stripped)
     return list(dict.fromkeys(v for v in variants if v.strip()))
+
+
+def names_a_text_entry(target: str) -> bool:
+    """Whether the phrase calls the control somewhere you type.
+
+    "The message box" and "the new message button" name different controls on
+    the same Slack screen, and the noun is the only thing that says which.
+    """
+    words = " ".join((target or "").split()).lower().split()
+    return bool(words) and words[-1] in _ENTRY_NOUNS
+
+
+def _squash(text: str) -> str:
+    """Letters and digits only, so spacing and punctuation stop mattering.
+
+    People say "fullscreen"; YouTube labels the control "Full screen (f)".
+    Nothing is wrong with either, and squashed they match.
+    """
+    return "".join(ch for ch in (text or "").lower() if ch.isalnum())
+
+
+def _content_words(text: str) -> set[str]:
+    """The words in a label that could identify it, minus the filler."""
+    cleaned = "".join(ch if ch.isalnum() else " " for ch in (text or "").lower())
+    return {w for w in cleaned.split() if w and w not in _STOPWORDS}
 
 
 def _speakable(what: str):
@@ -466,25 +540,123 @@ class BrowserManager:
         with the padding a person adds when speaking taken off. Exact always
         wins where there is one - loosening is a fallback, not a replacement.
         """
+        roles = _CLICKABLE_ROLES
+        if names_a_text_entry(target):
+            # "The message box" is the composer, not the "New message" button
+            # sitting next to it, so text entries get looked at first.
+            roles = _roles_in_order(_ENTRY_ROLES, _CLICKABLE_ROLES)
+
         for wanted in target_variants(target):
-            for role in ("button", "link", "tab", "menuitem", "checkbox", "radio"):
-                locator = page.get_by_role(role, name=wanted, exact=True)
+            # Exactness before role: an exact match anywhere on the page beats
+            # a loose match on whichever role happened to be checked first.
+            for exact in (True, False):
+                for role in roles:
+                    locator = page.get_by_role(role, name=wanted, exact=exact)
+                    count = await locator.count()
+                    if count:
+                        return await self._best_of(locator, count, wanted)
+
+            for exact in (True, False):
+                locator = page.get_by_text(wanted, exact=exact)
                 if await locator.count():
                     return locator.first
 
-                locator = page.get_by_role(role, name=wanted, exact=False)
-                if await locator.count():
-                    return locator.first
-
-            locator = page.get_by_text(wanted, exact=True)
-            if await locator.count():
-                return locator.first
-
-            locator = page.get_by_text(wanted, exact=False)
-            if await locator.count():
-                return locator.first
+        loose = await self._loosely_named(page, target)
+        if loose is not None:
+            return loose
 
         raise BrowserError(await self._nothing_named(page, target))
+
+    @staticmethod
+    async def _best_of(locator: Locator, count: int, wanted: str) -> Locator:
+        """Of several controls containing the words, the one that means them.
+
+        "Like" is inside "Dislike this video", so a plain substring match can
+        hand back the opposite of what was asked for. A match on a whole word
+        is the one a person meant.
+        """
+        if count == 1:
+            return locator.first
+        wanted_words = _content_words(wanted)
+        if not wanted_words:
+            return locator.first
+        for index in range(min(count, _MOST_CANDIDATES_WORTH_READING)):
+            candidate = locator.nth(index)
+            try:
+                label = await candidate.get_attribute("aria-label")
+                if not label:
+                    label = await candidate.inner_text()
+            except Exception:
+                continue
+            if wanted_words <= _content_words(label):
+                return candidate
+        return locator.first
+
+    async def _controls(self, page: Page) -> list[tuple[Locator, str]]:
+        """Every control on the page with the name a screen reader would read."""
+        found: list[tuple[Locator, str]] = []
+        for role in _roles_in_order(_ENTRY_ROLES, _CLICKABLE_ROLES):
+            if len(found) >= _MOST_CONTROLS_WORTH_READING:
+                break
+            for handle in await page.get_by_role(role).all():
+                if len(found) >= _MOST_CONTROLS_WORTH_READING:
+                    break
+                try:
+                    label = await handle.get_attribute("aria-label")
+                    if not label:
+                        label = await handle.inner_text()
+                except Exception:
+                    continue
+                label = " ".join((label or "").split())
+                if label:
+                    found.append((handle, label))
+        return found
+
+    async def _loosely_named(self, page: Page, target: str) -> Locator | None:
+        """The last resort: the page said it differently than the user did.
+
+        Two things get past strict matching here. Spacing and punctuation, so
+        "fullscreen" finds "Full screen (f)". And saying more than the label
+        does - "the more options menu" against Gmail's "More email options" -
+        where no amount of trimming the phrase makes one contain the other, but
+        the words plainly line up.
+
+        Only ever returns an unambiguous winner. Clicking the wrong control is
+        worse than admitting the control wasn't found, so a tie returns
+        nothing and the caller reports what IS on the page instead.
+        """
+        try:
+            controls = await self._controls(page)
+        except Exception:
+            return None
+        if not controls:
+            return None
+
+        variants = target_variants(target)
+        squashed = [_squash(v) for v in variants]
+        said = _content_words(variants[-1]) if variants else set()
+
+        scored: list[tuple[float, Locator]] = []
+        for handle, label in controls:
+            label_squashed = _squash(label)
+            score = 0.0
+            for form in squashed:
+                if form and (form in label_squashed or label_squashed in form):
+                    # Longer agreement is stronger evidence.
+                    score = max(score, 2.0 + len(form) / max(len(label_squashed), 1))
+            if not score and said:
+                shared = said & _content_words(label)
+                if len(shared) >= 2 or any(len(w) >= 5 for w in shared):
+                    score = len(shared)
+            if score:
+                scored.append((score, handle))
+
+        if not scored:
+            return None
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        if len(scored) > 1 and scored[0][0] == scored[1][0]:
+            return None
+        return scored[0][1]
 
     async def _nothing_named(self, page: Page, target: str) -> str:
         """Why the click failed, and what it could have clicked instead.
