@@ -184,6 +184,46 @@ def check_thinking() -> None:
                  "Add a Claude key in the AI tab, or switch paid AI back off")
 
 
+def check_content_engine() -> None:
+    """How far the business half can actually get, and what stops it.
+
+    Worth its own section because "why hasn't it posted anything" has a
+    different answer every week - a switch, a key, a missing program - and
+    each one is invisible until something names it.
+    """
+    print("\nThe content engine")
+    sys.path.insert(0, str(HERE))
+    try:
+        import permissions
+        from content import pipeline, styles
+    except Exception as exc:
+        fail(f"can't load the content engine: {exc}", "Tell me this error")
+        return
+
+    if not permissions.allowed("content"):
+        print(WARN + "the content engine is switched off, so the voice "
+                     "can't reach it")
+        problems.append(
+            "Switch the content engine on in the Permissions tab if you want "
+            "to ask for Reel scripts by voice")
+
+    state = pipeline.readiness()
+    for stage in state["stages"]:
+        if stage["ready"]:
+            print(OK + f"{stage['key']}: ready")
+        else:
+            print(WARN + f"{stage['key']}: {stage['blocker']}")
+
+    profile = styles.get()
+    if profile.placeholder:
+        print(WARN + "the house style is still the shipped placeholder")
+        problems.append(
+            f"Describe your reference reels in {styles.path()} - until then "
+            f"every script follows generic best practice rather than your look")
+    else:
+        print(OK + f"house style: {profile.name}")
+
+
 def check_wiring() -> None:
     """Are the pieces actually joined up?
 
@@ -500,8 +540,8 @@ def main() -> int:
     print("\n  Jarvis - checking everything\n" + "  " + "-" * 44)
     for check in (check_env, check_thinking, check_long_conversations,
                   check_memory, check_your_rules, check_learning,
-                  check_browser, check_wiring, check_services,
-                  check_settings_routes):
+                  check_browser, check_content_engine, check_wiring,
+                  check_services, check_settings_routes):
         try:
             check()
         except Exception as exc:

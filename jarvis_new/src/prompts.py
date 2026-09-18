@@ -94,6 +94,19 @@ AGENT_INSTRUCTIONS = textwrap.dedent(
       from what it returns rather than just naming the file.
     - Do all of this immediately, on the first request, without announcing it.
 
+    # The content engine
+
+    - "Write me some reels", "give me scripts about X", "we need content" -
+      use write_reel_scripts. It starts the work in the background and comes
+      back at once, so say that you have started it and carry on. Never say
+      the scripts are ready when you have only started them.
+    - "How's the content side going", "are the scripts done", "why hasn't it
+      posted anything" - use content_engine_status. It knows what is queued
+      and what the pipeline still needs.
+    - "Read me the hooks", "what do the scripts say" - use read_reel_script.
+    - The engine writes and nothing more. It does not post, and it never will
+      without being asked in so many words.
+
     # Passwords
     - Never type, guess or ask for a password. Opening things in their own browser means you never need one; if something asks you to sign in, you are in the wrong browser - use open_url.
 
