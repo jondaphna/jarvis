@@ -206,6 +206,7 @@ class TestThePromptDescribesTheToolsThatExist:
         import thinker
         import tools as browser_tools
         from browser import BrowserManager
+        from content.tools import ContentStudio
 
         holders = (
             browser_tools.BrowserTools(BrowserManager.__new__(BrowserManager)),
@@ -214,6 +215,7 @@ class TestThePromptDescribesTheToolsThatExist:
             os_tools.OSTools(),
             files.FileTools(),
             thinker.Thinker(),
+            ContentStudio(),
         )
         return {t.info.name for holder in holders for t in holder.tools}
 

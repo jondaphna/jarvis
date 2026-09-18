@@ -375,6 +375,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "memory": True,
         "power": False,
         "reasoning": True,
+        # The content engine writes scripts in the background. Off until you
+        # switch it on in the Permissions tab: its three tools would otherwise
+        # sit in every prompt competing with everyday requests. The stages
+        # that spend money or publish are gated separately again, by the
+        # permission broker, per run.
+        "content": False,
     },
 
     # --- which folders "search my files" may look in ----------------------- #

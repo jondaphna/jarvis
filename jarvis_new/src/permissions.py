@@ -88,6 +88,18 @@ CAPABILITIES: tuple[Capability, ...] = (
         "unless you switch on a paid model in the AI tab.",
         ("think",)),
     Capability(
+        "content", "Run the content engine",
+        "Write Instagram Reel scripts in the background and tell you how the "
+        "content side is doing. Writing only: it never posts anything, and "
+        "the script writing uses the same free brain as thinking.",
+        ("write_reel_scripts", "content_engine_status", "read_reel_script"),
+        # Off until you switch it on, for one measured reason: three more
+        # tools in every prompt is three more things competing with "open my
+        # Spotify" for the model's attention, on every turn, whether or not
+        # you are running a channel that day. The business engine is a mode
+        # you turn on, not a tax on the conversation.
+        default=False),
+    Capability(
         "power", "Lock, sleep, restart, shut down",
         "Power actions. It always asks out loud first, and one yes covers "
         "exactly one action.",

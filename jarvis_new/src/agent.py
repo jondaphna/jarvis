@@ -16,8 +16,10 @@ from livekit.agents import (
 from livekit.agents.beta.tools import EndCallTool
 from livekit.plugins import ai_coustics, google
 
+import workers
 from brain_memory import JarvisMemory
 from browser import BrowserManager
+from content.tools import ContentStudio
 from control_api import serve_in_background
 from files import FileTools
 from learning import Lessons
@@ -51,6 +53,10 @@ class Assistant(Agent):
         # The smart half. The voice stays fast; this is where hard
         # problems go.
         self.thinker = Thinker()
+        # The business half. Everything it does happens on a background
+        # worker, so asking for ten Reel scripts costs the conversation
+        # nothing but the sentence that asked for them.
+        self.studio = ContentStudio()
         self._settings = load_settings()
         self._rules = load_rules(self._settings)
         self._end_call_tool = EndCallTool(
@@ -118,6 +124,7 @@ class Assistant(Agent):
                 *self.os_tools.tools,
                 *self.file_tools.tools,
                 *self.thinker.tools,
+                *self.studio.tools,
                 *self._end_call_tool.tools,
             ], self._settings),
         )
@@ -180,6 +187,13 @@ async def my_agent(ctx: JobContext):
     # and the only symptom was "the settings don't work". In here, it fails
     # where you can read it.
     serve_in_background()
+
+    # The background workers, before anything can queue work on them. They
+    # run on their own thread with their own event loop: a Reel script takes
+    # most of a minute to write, and a minute of the voice loop being busy is
+    # a minute of an assistant that has stopped listening.
+    workers.start_workers()
+    ctx.add_shutdown_callback(workers.stop_workers)
 
     # One window, visible, and the same one every time. Jarvis opens a normal
     # Chrome and then attaches to it, so what you see and what it can act on

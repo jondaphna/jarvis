@@ -133,6 +133,8 @@ jarvis_new/
   src/tools.py      the 11 browser tools
   src/browser.py    Playwright wrapper
   src/prompts.py    the butler personality
+  src/workers.py    background jobs, off the voice thread
+  src/content/      the content engine - see CONTENT_ENGINE.md
   frontend/         the web page (Next.js)
 agent-starter-flutter/   the phone app
 ```
