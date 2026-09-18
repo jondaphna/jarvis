@@ -83,9 +83,18 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+#: How many hex characters a job reference gets. Eight was nicer to say and
+#: too few to be safe: thirty-two bits collide about half the time by seventy
+#: thousand jobs, and the collision surfaces as a UNIQUE constraint error
+#: raised at whoever created the job - which, before the database came off the
+#: voice path, meant raised at the person talking. Forty-eight bits pushes the
+#: same coin flip out to sixteen million.
+REF_CHARS = 12
+
+
 def new_ref() -> str:
     """A short, unambiguous handle for a job, said out loud without pain."""
-    return uuid.uuid4().hex[:8]
+    return uuid.uuid4().hex[:REF_CHARS]
 
 
 class ContentStore:
@@ -140,15 +149,30 @@ class ContentStore:
 
     def create_job(self, topic: str, kind: str = KIND_SCRIPT, style: str = "",
                    account: str = "", ref: str = "") -> str:
-        ref = ref or new_ref()
+        """Write the job row. Returns the reference it was stored under.
+
+        A reference this method invents may be retried on the astronomically
+        unlikely collision. One handed in may not: the caller has already told
+        somebody that number, so quietly storing the job under a different one
+        would be worse than failing.
+        """
+        supplied = bool(ref)
         conn = self.connection()
-        conn.execute(
-            "INSERT INTO content_jobs(ref, kind, topic, style, account, status, "
-            "created_at) VALUES(?,?,?,?,?,?,?)",
-            (ref, kind, topic.strip(), style.strip(), account.strip(),
-             STATUS_QUEUED, _now()))
-        conn.commit()
-        return ref
+        for attempt in range(3):
+            candidate = ref or new_ref()
+            try:
+                conn.execute(
+                    "INSERT INTO content_jobs(ref, kind, topic, style, account, "
+                    "status, created_at) VALUES(?,?,?,?,?,?,?)",
+                    (candidate, kind, topic.strip(), style.strip(),
+                     account.strip(), STATUS_QUEUED, _now()))
+            except sqlite3.IntegrityError:
+                if supplied or attempt == 2:
+                    raise
+                continue
+            conn.commit()
+            return candidate
+        raise sqlite3.IntegrityError("couldn't find a free job reference")
 
     def start_job(self, ref: str, stage: str = "") -> None:
         conn = self.connection()
