@@ -265,8 +265,17 @@ def test_the_reference_is_spoken_back_so_it_can_be_asked_for(db, home, monkeypat
     monkeypatch.setattr(pipeline, "run_script_job", lambda *a, **k: None)
     studio = ContentStudio(db=db)
     answer = _run(studio, studio.write_reel_scripts, topic="espresso", count=1)
-    ref = db.recent_jobs(limit=1)[0]["ref"]
-    assert ref in answer
+
+    # The row is written by the worker, not by the tool - that is what keeps
+    # the voice off SQLite's write lock - so wait for it rather than assuming
+    # it is already there.
+    deadline = time.monotonic() + 10
+    rows = []
+    while time.monotonic() < deadline and not rows:
+        rows = db.recent_jobs(limit=1)
+        time.sleep(0.01)
+    assert rows, "the worker never wrote the job row"
+    assert rows[0]["ref"] in answer
 
 
 def test_asking_with_no_topic_is_refused(db):

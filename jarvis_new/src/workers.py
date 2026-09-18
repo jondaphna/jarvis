@@ -47,6 +47,10 @@ SHUTDOWN_SECONDS = 5.0
 HISTORY = 40
 
 
+#: Statuses a job will never leave. Used to decide what may be forgotten.
+FINAL = ("done", "failed", "cancelled")
+
+
 @dataclass
 class Job:
     """One unit of background work, as the host sees it."""
@@ -59,6 +63,10 @@ class Job:
     finished_at: float = 0.0
     error: str = ""
     result: Any = None
+    #: Set by `cancel()`. Kept separate from `status` so a worker popping a
+    #: job it has already been told to drop can tell the difference between
+    #: "you were cancelled" and "the whole host is shutting down".
+    cancel_requested: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         seconds = 0.0
@@ -80,6 +88,9 @@ class WorkerHost:
         self._workers: list[asyncio.Task] = []
         self._jobs: dict[str, Job] = {}
         self._order: list[str] = []
+        #: ref -> the task running that job right now, so it can be cancelled
+        #: on its own without taking the worker down with it.
+        self._current: dict[str, asyncio.Future[Any]] = {}
         self._lock = threading.RLock()
         self._ready = threading.Event()
 
@@ -117,12 +128,19 @@ class WorkerHost:
             loop.run_forever()
         finally:
             self._ready.clear()
-            try:
+            # Cancel, then actually wait. A single tick of the loop is not
+            # enough for a cancelled worker to run its finally block, and a
+            # worker that never runs it leaves its job on "running" forever
+            # and prints "Task was destroyed but it is pending" on the way
+            # out. Bounded, because shutdown may not hang on a job that
+            # ignores cancellation.
+            with contextlib.suppress(Exception):
                 for task in self._workers:
                     task.cancel()
-                loop.run_until_complete(asyncio.sleep(0))
-            except Exception:
-                pass
+                loop.run_until_complete(
+                    asyncio.wait(self._workers, timeout=SHUTDOWN_SECONDS / 2))
+            with contextlib.suppress(Exception):
+                loop.run_until_complete(loop.shutdown_asyncgens())
             with contextlib.suppress(Exception):
                 loop.close()
 
@@ -180,59 +198,152 @@ class WorkerHost:
         assert queue is not None
         while True:
             job, work, args, kwargs = await queue.get()
-            job.status = "running"
-            job.started_at = time.time()
             try:
-                if inspect.iscoroutinefunction(work):
-                    job.result = await work(*args, **kwargs)
-                else:
-                    # A blocking call on this loop would stall every other
-                    # background job behind it, which is the same bug as
-                    # blocking the voice loop, one layer down.
-                    job.result = await asyncio.to_thread(work, *args, **kwargs)
-            except asyncio.CancelledError:
-                job.status = "cancelled"
-                job.finished_at = time.time()
-                raise
-            except Exception as exc:
-                job.status = "failed"
-                job.error = f"{type(exc).__name__}: {exc}"
-                # Printed rather than swallowed: a background job that fails
-                # silently is a business that quietly stops working.
-                print(f"  [worker] {job.name} failed: {job.error}")
-                print("  " + traceback.format_exc().replace("\n", "\n  ").strip())
-            else:
-                job.status = "done"
+                await self._run_one(job, work, args, kwargs)
             finally:
-                job.finished_at = job.finished_at or time.time()
                 queue.task_done()
+
+    async def _run_one(self, job: Job, work: Callable[..., Any],
+                       args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+        """Run one job, and leave it in a final state whatever happens.
+
+        The work goes in a task of its own rather than being awaited inline.
+        That is what makes `cancel()` possible: cancelling the inner task
+        stops one job, while cancelling the worker stops the host, and
+        awaiting the work directly would make those two indistinguishable.
+        """
+        if job.cancel_requested:
+            # Cancelled while it sat in the queue. Never started, so there is
+            # nothing to stop - just don't run it.
+            self._set(job, status="cancelled", finished_at=time.time())
+            return
+
+        self._set(job, status="running", started_at=time.time())
+        if inspect.iscoroutinefunction(work):
+            inner = asyncio.ensure_future(work(*args, **kwargs))
+        else:
+            # A blocking call on this loop would stall every other background
+            # job behind it, which is the same bug as blocking the voice loop,
+            # one layer down.
+            inner = asyncio.ensure_future(asyncio.to_thread(work, *args, **kwargs))
+        self._current[job.ref] = inner
+
+        try:
+            result = await inner
+        except asyncio.CancelledError:
+            self._set(job, status="cancelled", finished_at=time.time())
+            # Only the job was cancelled: the worker carries on to the next
+            # one. If the host is going down, the worker's own task is
+            # cancelled too and that propagates from the await in _worker.
+            if job.cancel_requested:
+                return
+            raise
+        except Exception as exc:
+            self._set(job, status="failed", finished_at=time.time(),
+                      error=f"{type(exc).__name__}: {exc}")
+            # Printed rather than swallowed: a background job that fails
+            # silently is a business that quietly stops working.
+            print(f"  [worker] {job.name} failed: {job.error}")
+            print("  " + traceback.format_exc().replace("\n", "\n  ").strip())
+        else:
+            self._set(job, status="done", finished_at=time.time(), result=result)
+        finally:
+            self._current.pop(job.ref, None)
 
     # ------------------------------------------------------------------ #
     # Looking at it
     # ------------------------------------------------------------------ #
+
+    def _set(self, job: Job, **fields: Any) -> None:
+        """Change a job's state under the lock.
+
+        `status()` reads several fields of the same job in one pass, and a
+        reader that catches a job half-updated reports a finished job with no
+        finish time - which shows up as a duration counted from now, growing
+        every time you look at it.
+        """
+        with self._lock:
+            for key, value in fields.items():
+                setattr(job, key, value)
+
+    def cancel(self, ref: str) -> bool:
+        """Stop a queued or running job. True if there was one to stop.
+
+        A queued job is simply never started. A running job has its task
+        cancelled - and for a job that is a plain blocking function, that is
+        honest but partial: Python cannot stop a thread from outside, so the
+        work keeps running to its end with nobody waiting for the result. The
+        job is cancelled from the caller's point of view, and the machine
+        finishes what it started. Jobs that may need stopping mid-flight
+        should be coroutines with await points.
+        """
+        job = self.job(ref)
+        if job is None or job.status in FINAL:
+            return False
+        self._set(job, cancel_requested=True)
+        inner = self._current.get(ref)
+        loop = self._loop
+        if inner is not None and loop is not None:
+            with contextlib.suppress(Exception):
+                loop.call_soon_threadsafe(inner.cancel)
+        else:
+            # Still in the queue: mark it now so a reader sees the truth
+            # immediately, and the worker drops it when it reaches the front.
+            self._set(job, status="cancelled", finished_at=time.time())
+        return True
 
     def job(self, ref: str) -> Job | None:
         with self._lock:
             return self._jobs.get(ref)
 
     def status(self) -> dict[str, Any]:
+        """What the host is doing, for the tool that reads it out loud.
+
+        Anything still live is listed first and is never cut, however long
+        ago it was queued. Ordering by recency alone loses exactly the wrong
+        job: an overnight render is the oldest entry in the history long
+        before it is finished, so it drops off the end of the window while it
+        is still running, and "what is it doing" answers "nothing".
+        """
         with self._lock:
             jobs = [self._jobs[ref].as_dict() for ref in self._order
                     if ref in self._jobs]
         queued = sum(1 for j in jobs if j["status"] == "queued")
         running = sum(1 for j in jobs if j["status"] == "running")
+
+        live = [job for job in jobs if job["status"] not in FINAL]
+        done = [job for job in reversed(jobs) if job["status"] in FINAL]
         return {"running": self.running, "queued": queued, "in_progress": running,
-                "concurrency": self.concurrency, "jobs": list(reversed(jobs))[:HISTORY]}
+                "concurrency": self.concurrency,
+                "jobs": live + done[:max(0, HISTORY - len(live))]}
 
     def _trim(self) -> None:
-        while len(self._order) > HISTORY * 2:
-            stale = self._order.pop(0)
-            job = self._jobs.get(stale)
-            if job is not None and job.status in ("queued", "running"):
-                # Still live: keep it and drop the next one instead.
-                self._order.append(stale)
-                return
-            self._jobs.pop(stale, None)
+        """Forget the oldest finished jobs once there are too many.
+
+        Live jobs are walked past rather than stopped at, and - this is the
+        part that matters - they keep their place. The obvious version pops
+        the front and, when that job is still live, puts it back at the *end*
+        before giving up; the queue stays bounded either way, but a running
+        job silently becomes the newest entry in the history, so the status
+        tool reports an hour-old render as the thing that just started.
+
+        The durable record is in the database. What is dropped here is only
+        the in-memory copy the status tool reads.
+        """
+        surplus = len(self._order) - HISTORY * 2
+        if surplus <= 0:
+            return
+        kept: list[str] = []
+        for ref in self._order:
+            job = self._jobs.get(ref)
+            if job is None:
+                continue                     # already forgotten
+            if surplus > 0 and job.status in FINAL:
+                self._jobs.pop(ref, None)
+                surplus -= 1
+                continue
+            kept.append(ref)
+        self._order = kept
 
 
 # --------------------------------------------------------------------------- #

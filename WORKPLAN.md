@@ -33,6 +33,30 @@ All three parts are in the settings panel now.
   read at the start of every conversation.
 - **Commands tab** — exact words in, exact words out.
 
+### The content engine — the business half, on a background worker ✅
+
+The complaint this answers is structural rather than a feature: `jarvis_new/`
+had nowhere to do work that takes longer than a sentence. Missions saved from
+the settings panel were never executed, because the scheduler only exists on
+the older generation's `Assistant`, which the voice agent never builds.
+
+So there is now a background host — its own thread, its own event loop, its own
+queue — and the first thing running on it is the Reel scriptwriter. Ask for
+three scripts and the answer comes back in about two milliseconds with a
+reference; the writing happens behind the conversation and the result is in
+SQLite when you come back to it.
+
+Measured rather than asserted, under a busy host and a database being written
+to continuously: **p95 of 2.65ms across the three tools, and the voice event
+loop running 2.98ms late at p95** — the number that stands in for audio
+stutter. See `jarvis_new/CONTENT_ENGINE.md` for the stage map, the schema and
+the API configuration each remaining stage needs.
+
+Stages: **script** built and free. **voiceover**, **visuals**, **render**,
+**review** and **publish** declared, each naming the existing plugin that
+already does the work. Publishing is designed against the official Instagram
+Graph API for Business and Creator accounts.
+
 ### The browser, which everything else leans on ✅
 
 Jarvis opens an ordinary Chrome and attaches to it. That means one window, the
@@ -42,6 +66,39 @@ and click in it. Items 4, 7 and 10 below all depend on this and now have it.
 ---
 
 ## Next, in this order
+
+### 0. Finish the content pipeline — *two to three days, stage by stage*
+
+The scriptwriter is one of six stages. The rest are wiring existing plugins to
+the worker rather than new inventions, and they are worth doing in this order
+because each one makes the previous one testable end to end.
+
+**Voiceover — half a day, free.** `jarvis/plugins/tts_batch.py` already turns a
+list of strings into audio files, and `ReelScript.voiceover_text()` is exactly
+that list. edge-tts costs nothing and is good enough to prove the pipeline;
+ElevenLabs is the upgrade and is where the first pound of budget belongs,
+because the voice is what holds a viewer.
+
+**Visuals — half a day.** One image per beat from `beat.visual`, through
+`jarvis/plugins/image_flux.py` on Replicate. About $0.003 an image, so roughly
+two pence for a six-beat Reel.
+
+**Render — a day.** ffmpeg locally: stills to 9:16, the voiceover over the top,
+`beat.on_screen` burned in at `beat.at`. Free, and the stage with the most
+fiddly detail in it.
+
+**Review — half a day.** The finished file and its caption somewhere you can
+watch it before anything is published. Deliberately between render and publish:
+the first weeks of a new channel are worth watching by eye.
+
+**Publish — half a day, plus your setup.** The two-call Graph API flow.
+
+**What I need from you:** an Instagram Business or Creator account linked to a
+Facebook Page, a Meta app with `instagram_content_publish`, and a long-lived
+access token. Also somewhere the render can be uploaded that Instagram can
+reach — the Graph API takes a public URL, not a file upload. And, separately
+from any of that: a description of the six reference Reels, so the house style
+stops being the shipped placeholder.
 
 ### 1. Google Calendar & Gmail — *about a day*
 The biggest daily win, and the tasks system is already there to hang it on.
@@ -137,6 +194,10 @@ Your call — say the word and I'll build it that way.
 
 | For | What |
 |---|---|
+| Publishing Reels | An Instagram Business/Creator account, a Meta app with `instagram_content_publish`, a long-lived token, and public hosting for the rendered file |
+| The house style | A description of the six reference Reels, or the files themselves |
+| Premium voiceovers | An ElevenLabs key (optional — edge-tts is free) |
+| Generated visuals | A Replicate token (~$0.003 an image) |
 | Calendar & Gmail | A Google Cloud OAuth client ID (Desktop app) |
 | Spotify control | A Spotify developer client ID + secret, and Premium |
 | Workspace search | Which folders to index |

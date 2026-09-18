@@ -118,7 +118,13 @@ class ReelScript:
     @classmethod
     def from_dict(cls, raw: dict[str, Any], topic: str = "",
                   style: str = "") -> ReelScript:
-        beats = [Beat.from_dict(item) for item in (raw.get("beats") or [])]
+        # Only a real sequence counts. A string is iterable, so a model that
+        # answers "beats": "three quick beats" would otherwise be read one
+        # character at a time and produce a script of twenty empty shots that
+        # passes every other check.
+        raw_beats = raw.get("beats")
+        raw_beats = raw_beats if isinstance(raw_beats, (list, tuple)) else []
+        beats = [Beat.from_dict(item) for item in raw_beats]
         beats = [beat for beat in beats
                  if beat.voiceover or beat.on_screen or beat.visual]
         return cls(
