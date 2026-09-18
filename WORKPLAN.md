@@ -57,6 +57,51 @@ Stages: **script** built and free. **voiceover**, **visuals**, **render**,
 already does the work. Publishing is designed against the official Instagram
 Graph API for Business and Creator accounts.
 
+### Standing routines — the things it does without being asked ✅
+
+The same structural complaint, one layer up. The settings panel could save a
+mission; nothing ran it. The old generation's `MissionScheduler` is correct and
+well tested and has never executed in this generation, because it hangs off an
+object the voice agent does not build.
+
+There is now a routines engine on the background host: a schedule, an action,
+and a ticker living beside the job queue rather than in it. A fresh install is
+seeded with a **Good morning briefing** at 07:30 and a **Morning system check**
+at 07:25, both on, both costing nothing to run, plus an evening wrap-up that is
+off until you want it.
+
+Three properties it was built for, each with a test that fails without it:
+
+- **It survives a restart.** A briefing due while the machine was off still
+  runs when it comes back, once, inside its grace window — and a briefing
+  missed for a week fires once rather than seven times.
+- **It cannot fire twice.** The due time a process read is part of the UPDATE's
+  WHERE clause, so exactly one of the voice agent and the settings API can own
+  a firing. Verified with eight threads racing one database file.
+- **It costs the conversation nothing.** With the ticker running and a routine
+  actually firing: content tools at **1.72ms p95** and the voice event loop
+  **1.14ms late at p95**, against a 20ms budget.
+
+A briefing at 07:30 has nobody to speak to, so it writes what it would have
+said and says it when the next call opens. Schedules are written the way people
+write them — `07:30`, `weekdays at 07:30`, `every 15 minutes`, `@daily` — and
+stored as cron. No new voice tools, so no cost to the tool surface. Full manual
+in `jarvis_new/ROUTINES.md`.
+
+### The house style, as a form rather than a guess ✅
+
+`%APPDATA%\JARVIS\house_style.json` now ships with six numbered reference
+slots, one per Reel, in the order they were given, with the first two marked
+top priority. Each asks eleven specific questions — what happens in the first
+two seconds, whether there is narration, how often it cuts, what to copy, what
+not to. Answer any real one and the profile stops calling itself a placeholder,
+a `# The reference Reels` section appears in every scriptwriting prompt, and
+the doctor stops nagging. No code change, no flag to set.
+
+The links live in the file rather than the prompt because nothing in this
+codebase can open instagram.com — the network refuses it — and a model handed
+a link it cannot fetch describes what it imagines it found.
+
 ### The browser, which everything else leans on ✅
 
 Jarvis opens an ordinary Chrome and attaches to it. That means one window, the
@@ -97,8 +142,9 @@ the first weeks of a new channel are worth watching by eye.
 Facebook Page, a Meta app with `instagram_content_publish`, and a long-lived
 access token. Also somewhere the render can be uploaded that Instagram can
 reach — the Graph API takes a public URL, not a file upload. And, separately
-from any of that: a description of the six reference Reels, so the house style
-stops being the shipped placeholder.
+from any of that: the six reference slots in `house_style.json` filled in, so
+the house style stops being the shipped placeholder. The questions are already
+in the file.
 
 ### 1. Google Calendar & Gmail — *about a day*
 The biggest daily win, and the tasks system is already there to hang it on.
@@ -195,7 +241,7 @@ Your call — say the word and I'll build it that way.
 | For | What |
 |---|---|
 | Publishing Reels | An Instagram Business/Creator account, a Meta app with `instagram_content_publish`, a long-lived token, and public hosting for the rendered file |
-| The house style | A description of the six reference Reels, or the files themselves |
+| The house style | Six answers in `%APPDATA%\JARVIS\house_style.json` — the slots and the questions are already there |
 | Premium voiceovers | An ElevenLabs key (optional — edge-tts is free) |
 | Generated visuals | A Replicate token (~$0.003 an image) |
 | Calendar & Gmail | A Google Cloud OAuth client ID (Desktop app) |

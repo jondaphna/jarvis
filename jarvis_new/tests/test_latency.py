@@ -366,3 +366,110 @@ class TestTheWorkStillHappens:
             studio, None, reference=reference))
         assert "A hook that earns" in said
         assert pipeline.readiness()["style"]["placeholder"] is True
+
+
+class TestTheRoutineTickerCostsTheVoiceNothing:
+    """The standing routines add a second thing polling the same database.
+
+    A scheduler is a loop that asks "is anything due" forever. The content
+    engine's own lesson was that the cost of touching SQLite is not the write,
+    it is the lock - so a ticker doing an indexed SELECT every few seconds
+    beside a busy writer is worth measuring rather than assuming, and it is
+    measured here at a tick far faster than the one that ships.
+    """
+
+    def ticking(self, tmp_path, host, every=0.05):
+        from routines.engine import RoutineEngine
+        from routines.store import RoutineStore
+
+        engine = RoutineEngine(store=RoutineStore(tmp_path / "jarvis.db"),
+                               host=host, tick_seconds=every)
+        for index in range(6):
+            engine.save({"name": f"Routine {index}", "action": "note",
+                         "schedule": "@daily", "instruction": "nothing"})
+        engine.start(seed=False)
+        return engine
+
+    def test_the_tools_stay_inside_the_budget_while_it_ticks(
+            self, busy, tmp_path, monkeypatch):
+        from content import pipeline
+
+        monkeypatch.setattr(pipeline, "run_script_job", lambda *a, **k: None)
+        engine = self.ticking(tmp_path, busy.host)
+        try:
+            studio = ContentStudio(db=busy.db)
+            ref = busy.db.create_job("espresso")
+            busy.db.finish_job(ref, result={"count": 1, "scripts": [SCRIPT]})
+            calls = [
+                lambda i: studio.write_reel_scripts.__wrapped__(
+                    studio, None, topic=f"topic {i}", count=1),
+                lambda i: studio.content_engine_status.__wrapped__(studio, None),
+                lambda i: studio.read_reel_script.__wrapped__(
+                    studio, None, reference=ref),
+            ]
+            latencies, _ = measure_on_one_loop(calls)
+        finally:
+            engine.stop()
+        report = summarise(latencies, "all three tools, routines ticking")
+        assert report["p95"] < BUDGET_MS, f"p95 was {report['p95']:.1f}ms"
+
+    def test_the_voice_loop_is_not_starved_while_it_ticks(
+            self, busy, tmp_path, monkeypatch):
+        from content import pipeline
+
+        monkeypatch.setattr(pipeline, "run_script_job", lambda *a, **k: None)
+        engine = self.ticking(tmp_path, busy.host)
+        try:
+            studio = ContentStudio(db=busy.db)
+            calls = [lambda i: studio.content_engine_status.__wrapped__(
+                studio, None)]
+            _, lags = measure_on_one_loop(calls)
+        finally:
+            engine.stop()
+        report = summarise(lags, "voice loop lag, routines ticking")
+        assert report["p95"] < LOOP_LAG_MS, \
+            f"the voice loop ran {report['p95']:.1f}ms late at p95"
+
+    def test_a_routine_firing_does_not_pause_the_voice(self, busy, tmp_path,
+                                                       monkeypatch):
+        """Not just idle ticking - one actually running while the tools are
+        called, which is what half past seven looks like if he is up early."""
+        from content import pipeline
+
+        monkeypatch.setattr(pipeline, "run_script_job", lambda *a, **k: None)
+        engine = self.ticking(tmp_path, busy.host)
+        try:
+            saved = engine.save({"name": "Fires now", "action": "note",
+                                 "schedule": "* * * * *",
+                                 "instruction": "good morning"})
+            engine.store.set_next_run(saved["id"], time_in_the_past())
+            studio = ContentStudio(db=busy.db)
+            calls = [lambda i: studio.content_engine_status.__wrapped__(
+                studio, None)]
+            # A longer window than the other cases: the routine's job queues
+            # behind the load at the shipped concurrency of one, and a
+            # measurement that ends before it runs would be measuring an idle
+            # ticker again.
+            latencies, lags = measure_on_one_loop(calls, rounds=240)
+            # The job is queued behind the load, so the wait is for it to
+            # reach a worker. What is asserted is that it really ran - a
+            # measurement taken beside a routine that never fired would prove
+            # nothing at all.
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                if engine.store.get(saved["id"])["runs"] >= 1:
+                    break
+                time.sleep(0.05)
+            assert engine.store.get(saved["id"])["last_output"] == "good morning"
+        finally:
+            engine.stop()
+        tools = summarise(latencies, "status tool while a routine fires")
+        loop = summarise(lags, "voice loop lag while a routine fires")
+        assert tools["p95"] < BUDGET_MS
+        assert loop["p95"] < LOOP_LAG_MS
+
+
+def time_in_the_past(seconds: int = 30):
+    from datetime import datetime, timedelta, timezone
+
+    return datetime.now(timezone.utc) - timedelta(seconds=seconds)

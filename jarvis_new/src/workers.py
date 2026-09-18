@@ -29,6 +29,7 @@ Three properties are deliberate:
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures as futures
 import contextlib
 import inspect
 import threading
@@ -49,6 +50,23 @@ HISTORY = 40
 
 #: Statuses a job will never leave. Used to decide what may be forgotten.
 FINAL = ("done", "failed", "cancelled")
+
+
+async def _guard(coro: Any, label: str) -> None:
+    """Run a spawned daemon and say something if it dies.
+
+    A task that raises on a loop nobody awaits is collected in silence. For
+    the routine ticker that means every scheduled thing stops happening and
+    the only evidence is that nothing happens, which is indistinguishable
+    from it never having been set up.
+    """
+    try:
+        await coro
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        print(f"  [worker] {label} stopped: {type(exc).__name__}: {exc}")
+        print("  " + traceback.format_exc().replace("\n", "\n  ").strip())
 
 
 @dataclass
@@ -86,6 +104,10 @@ class WorkerHost:
         self._thread: threading.Thread | None = None
         self._queue: asyncio.Queue | None = None
         self._workers: list[asyncio.Task] = []
+        #: Long-lived tasks put on the loop by `spawn` - the routine ticker is
+        #: the one that matters. Held so they are not garbage collected, and
+        #: cancelled with the workers on the way out.
+        self._daemons: list[asyncio.Task] = []
         self._jobs: dict[str, Job] = {}
         self._order: list[str] = []
         #: ref -> the task running that job right now, so it can be cancelled
@@ -135,10 +157,12 @@ class WorkerHost:
             # out. Bounded, because shutdown may not hang on a job that
             # ignores cancellation.
             with contextlib.suppress(Exception):
-                for task in self._workers:
+                pending = [*self._workers, *self._daemons]
+                for task in pending:
                     task.cancel()
                 loop.run_until_complete(
-                    asyncio.wait(self._workers, timeout=SHUTDOWN_SECONDS / 2))
+                    asyncio.wait(pending, timeout=SHUTDOWN_SECONDS / 2))
+                self._daemons.clear()
             with contextlib.suppress(Exception):
                 loop.run_until_complete(loop.shutdown_asyncgens())
             with contextlib.suppress(Exception):
@@ -192,6 +216,60 @@ class WorkerHost:
                 job.error = "the background worker wasn't accepting jobs"
             return job.ref
         return job.ref
+
+    def spawn(self, work: Callable[..., Any], *args: Any, name: str = "",
+              **kwargs: Any) -> Any:
+        """Put a long-lived coroutine on the worker loop, outside the queue.
+
+        The queue is for jobs that finish. A ticker does not finish, and
+        submitting one would take a worker slot forever - at the shipped
+        concurrency of one, that is the entire pool, and no content job would
+        ever run again. So this creates a task directly on the loop instead:
+        same thread, same isolation from the voice loop, no queue slot.
+
+        Returns the task, or None if the host would not start. The caller
+        holds the return value, and so does the host: the loop keeps only a
+        weak reference to a running task, and one that is garbage collected
+        mid-flight simply stops, silently, which for a scheduler means every
+        routine quietly never firing again.
+        """
+        if not self.running and not self.start():
+            return None
+        loop = self._loop
+        if loop is None:
+            return None
+
+        label = name or getattr(work, "__name__", "daemon")
+        handoff: futures.Future = futures.Future()
+
+        def make() -> None:
+            try:
+                task = loop.create_task(_guard(work(*args, **kwargs), label))
+            except Exception as exc:                # pragma: no cover - defensive
+                handoff.set_exception(exc)
+                return
+            with self._lock:
+                self._daemons.append(task)
+            handoff.set_result(task)
+
+        try:
+            loop.call_soon_threadsafe(make)
+            return handoff.result(timeout=5.0)
+        except Exception:
+            return None
+
+    def cancel_spawned(self, task: Any) -> bool:
+        """Stop one spawned daemon. True if there was one to stop."""
+        loop = self._loop
+        if task is None or loop is None:
+            return False
+        with self._lock:
+            if task in self._daemons:
+                self._daemons.remove(task)
+        with contextlib.suppress(Exception):
+            loop.call_soon_threadsafe(task.cancel)
+            return True
+        return False
 
     async def _worker(self, index: int) -> None:
         queue = self._queue

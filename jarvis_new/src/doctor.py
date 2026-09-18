@@ -224,6 +224,64 @@ def check_content_engine() -> None:
         print(OK + f"house style: {profile.name}")
 
 
+def check_routines() -> None:
+    """Are the standing routines armed, and has anything actually fired?
+
+    "Armed" is the easy half and the half that lies: a row with a future time
+    on it looks identical whether the ticker is running or was never started.
+    So this also looks at whether anything has run, and whether a due time has
+    come and gone with nothing to show for it.
+    """
+    print("\nStanding routines")
+    sys.path.insert(0, str(HERE))
+    try:
+        from routines.engine import get_engine, to_dt
+    except Exception as exc:
+        fail(f"can't load the routines engine: {exc}", "Tell me this error")
+        return
+
+    runner = get_engine()
+    try:
+        rows = runner.listing()
+    except Exception as exc:
+        fail(f"can't read your routines: {exc}", "Tell me this error")
+        return
+
+    if not rows:
+        print(WARN + "no routines yet - they are seeded when the agent "
+                     "first starts")
+        return
+
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    for row in rows:
+        if not row.get("enabled"):
+            print(WARN + f"{row['name']}: off")
+            continue
+        due = to_dt(str(row.get("next_run_at") or ""))
+        if due is None:
+            fail(f"{row['name']} is on but has no next run time",
+                 f"Re-save {row['name']} in the Rules tab; its schedule "
+                 f"can't be read")
+            continue
+        late = now - due
+        when = due.astimezone().strftime("%a %H:%M")
+        if late > timedelta(hours=6):
+            fail(f"{row['name']} was due {when} and hasn't run",
+                 "Start the agent (butler-orb.bat) - routines only tick while "
+                 "it is running")
+        elif row.get("last_status") == "failed":
+            fail(f"{row['name']} failed last time: {row.get('last_error')}",
+                 f"Look at {row['name']} in the Rules tab")
+        else:
+            ran = row.get("last_run_at")
+            tail = f", last ran {to_dt(str(ran)).astimezone():%a %H:%M}" if ran \
+                else ", never run yet"
+            print(OK + f"{row['name']}: {row['schedule_in_words']}, "
+                       f"next {when}{tail}")
+
+
 def check_wiring() -> None:
     """Are the pieces actually joined up?
 
@@ -540,7 +598,8 @@ def main() -> int:
     print("\n  Jarvis - checking everything\n" + "  " + "-" * 44)
     for check in (check_env, check_thinking, check_long_conversations,
                   check_memory, check_your_rules, check_learning,
-                  check_browser, check_content_engine, check_wiring,
+                  check_browser, check_content_engine, check_routines,
+                  check_wiring,
                   check_services, check_settings_routes):
         try:
             check()

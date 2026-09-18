@@ -16,6 +16,7 @@ from livekit.agents import (
 from livekit.agents.beta.tools import EndCallTool
 from livekit.plugins import ai_coustics, google
 
+import routines
 import workers
 from brain_memory import JarvisMemory
 from browser import BrowserManager
@@ -138,6 +139,12 @@ class Assistant(Agent):
                 # the block that makes a repeated job land first time.
                 self.lessons.block(),
                 self.lessons.guidance(),
+                # Anything a standing routine produced while nobody was
+                # talking to him. Read once and then marked delivered, so a
+                # briefing is not repeated in every call until it happens to
+                # come up.
+                routines.pending_block(),
+                routines.routines_block(),
                 permission_summary(self._settings),
             ))
 
@@ -194,6 +201,13 @@ async def my_agent(ctx: JobContext):
     # a minute of an assistant that has stopped listening.
     workers.start_workers()
     ctx.add_shutdown_callback(workers.stop_workers)
+
+    # The standing routines - the morning briefing and anything else set up in
+    # the settings panel. Armed here, ticking on the worker host, so they fire
+    # whether or not anybody is in a call. Started after the workers because
+    # the ticker lives on that host's loop.
+    routines.start_routines()
+    ctx.add_shutdown_callback(routines.stop_routines)
 
     # One window, visible, and the same one every time. Jarvis opens a normal
     # Chrome and then attaches to it, so what you see and what it can act on

@@ -47,19 +47,70 @@ hour later and ask for them again.
 Everything the model is told about *how* to write lives in one file:
 
 ```
-%APPDATA%\JARVIS\content_styles.json
+%APPDATA%\JARVIS\house_style.json
 ```
 
-It is written on first use and never overwritten afterwards. Edit the
-`reference` profile — length, hook timing, how the narration sounds, what the
-on-screen text does, what to avoid — and the next job follows it. No code
-change, no restart.
+It is written on first use and never overwritten afterwards. An install from
+before the rename keeps its edits: `content_styles.json` is read once, and its
+profiles are carried across.
+
+The file has two halves.
+
+### The six reference slots — the part to fill in
+
+```jsonc
+{
+  "references": [
+    {
+      "slot": 1,
+      "priority": "top",
+      "url": "https://www.instagram.com/reel/…",
+      "first_two_seconds": "(What is on screen and said in the first two seconds, in order.)",
+      "narration":         "(Voice or no voice. Whose. Scripted or talking. …)",
+      "on_screen_text":    "(How much text, where it sits, when it changes, …)",
+      "visuals":           "(Stock, screen recording, generated, filmed. …)",
+      "cutting":           "(How often it cuts, and what the rhythm does. …)",
+      "sound":             "(Music, its energy, and any sound effects. …)",
+      "subject":           "(What it is about, and who it is for.)",
+      "why_it_works":      "(Why you saved this one. The bit you want copied.)",
+      "copy_this":         "(The specific thing to reproduce in our scripts.)",
+      "do_not_copy":       "(Anything in it that is theirs, or that you dislike.)"
+    }
+  ]
+}
+```
+
+Six slots, numbered, each already holding one of the six Reel links in the
+order they were given, with the first two marked `"priority": "top"`. Replace
+the question in brackets with your answer; anything left as a question is
+ignored.
+
+The links are in the file rather than in the prompt for a reason: **nothing in
+this codebase can open instagram.com.** The network these builds run behind
+refuses it, and a model handed a link it cannot fetch will describe what it
+imagines it found. So the slots exist to be answered by somebody who can watch
+them.
+
+Three fields count as having genuinely described a Reel —
+`first_two_seconds`, `why_it_works`, `copy_this`. Answer any one of them and:
+
+- the profile stops reporting itself as a placeholder, with no flag to set;
+- a `# The reference Reels` section appears in every scriptwriting prompt,
+  with the top-priority ones marked;
+- the status tool and `butler-doctor.bat` stop saying the style is unset.
+
+Pasting the URL back in does not count. A link on its own tells the
+scriptwriter nothing.
+
+### The profiles — the part that already works
+
+`profiles.reference` holds the mechanical settings: length, hook timing, how
+the narration sounds, what the on-screen text does, how many hashtags, what to
+avoid. Edit it and the next job follows it. No code change, no restart.
 
 **The shipped profile is a placeholder.** It was written without access to the
 reference Reels, so it follows generic short-form best practice rather than
-your look. Replace its fields with what those Reels actually do and set
-`"placeholder": false`; until you do, the status tool and the doctor both say
-so out loud.
+your look.
 
 ## The pipeline
 
