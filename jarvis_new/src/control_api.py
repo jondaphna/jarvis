@@ -20,6 +20,7 @@ import json
 import secrets
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -109,6 +110,9 @@ class Control:
         self.paths = paths
         self.config = Config()
         self.key_specs = KEY_SPECS
+        #: (checked_at, answer) for the content pipeline's readiness. See
+        #: `_content_readiness` for why it is not worked out every time.
+        self._readiness_cache: tuple[float, dict[str, Any]] | None = None
 
     # -- settings --------------------------------------------------------- #
 
@@ -457,6 +461,117 @@ class Control:
 
         return get_engine().store.runs(routine_id, limit=limit)
 
+    # -- background workers and the content engine ------------------------ #
+
+    def workers(self) -> dict[str, Any]:
+        """What the background host is doing, for the dashboard's live panel.
+
+        In-memory only: no database is touched, because this is polled every
+        few seconds for as long as the dashboard is open and the one thing
+        that must stay cheap is looking at the machine.
+        """
+        try:
+            import workers
+
+            return workers.host().status()
+        except Exception as exc:
+            return {"running": False, "paused": False, "queued": 0,
+                    "in_progress": 0, "concurrency": 1, "jobs": [],
+                    "error": str(exc)}
+
+    def set_workers_paused(self, paused: bool) -> dict[str, Any]:
+        """Hold back background work, or let it flow again.
+
+        Pausing rather than stopping, so the queue survives: press resume and
+        everything that was waiting runs, in the order it arrived.
+        """
+        import workers
+
+        return {"paused": workers.host().set_paused(bool(paused))}
+
+    def _content_readiness(self) -> dict[str, Any]:
+        """Which pipeline stages can run, cached for a short while.
+
+        Checking costs a vault decryption, a handful of imports and a PATH
+        search per stage. That is fine once; it is not fine every three
+        seconds for as long as the dashboard is open, so the answer is held
+        for a minute. Nothing in it changes faster than that without a key
+        being added, and adding a key reloads the panel anyway.
+        """
+        now = time.time()
+        cached = self._readiness_cache
+        if cached and now - cached[0] < 60:
+            return cached[1]
+        from content import pipeline
+
+        fresh = pipeline.readiness()
+        self._readiness_cache = (now, fresh)
+        return fresh
+
+    def content(self) -> dict[str, Any]:
+        """The whole content side in one call: switch, stages, jobs, scripts.
+
+        Errors are reported in the payload rather than raised. A machine with
+        no database yet is the normal state before the first job, and it must
+        read as "nothing has run" rather than as a broken panel.
+        """
+        import permissions
+
+        payload: dict[str, Any] = {
+            "enabled": permissions.allowed("content", self.config.settings),
+            "workers": self.workers(),
+            "jobs": [],
+            "scripts": [],
+            "counts": {"queued": 0, "running": 0, "done": 0, "failed": 0},
+            "stages": [],
+            "style": {},
+            "error": "",
+        }
+        try:
+            ready = self._content_readiness()
+            payload["stages"] = ready.get("stages", [])
+            payload["style"] = ready.get("style", {})
+        except Exception as exc:
+            payload["error"] = str(exc)
+
+        try:
+            from content.store import store
+
+            db = store()
+            jobs = db.recent_jobs(limit=25)
+            payload["jobs"] = jobs
+            payload["scripts"] = db.assets(kind="script", limit=12)
+            counts = payload["counts"]
+            for job in jobs:
+                status = str(job.get("status", ""))
+                if status in counts:
+                    counts[status] += 1
+        except Exception as exc:
+            payload["error"] = payload["error"] or str(exc)
+        return payload
+
+    def queue_content(self, topic: str, count: int = 3,
+                      style: str = "") -> dict[str, Any]:
+        """Start a script job from the dashboard.
+
+        Refused when the switch is off, rather than quietly queued: a button
+        that appears to work while the capability is off is how you end up
+        waiting all evening for a job nobody was going to run.
+        """
+        import permissions
+
+        topic = topic.strip()
+        if not topic:
+            raise ValueError("Say what the scripts should be about.")
+        if not permissions.allowed("content", self.config.settings):
+            raise ValueError("The content engine is switched off. Turn it on "
+                             "in the permissions matrix first.")
+        from content import pipeline
+
+        ref = pipeline.queue_scripts(topic, count=max(1, min(int(count), 10)),
+                                     style=style)
+        return {"ref": ref, "topic": topic}
+
     def _rulebook(self) -> Any:
         try:
             from jarvis.core.rules import RuleBook
@@ -672,6 +787,22 @@ class _Handler(BaseHTTPRequestHandler):
                 return control.save_routine(body)
             if method == "DELETE" and rest:
                 return control.delete_routine(rest[0])
+
+        if head == "content":
+            if method == "GET":
+                return control.content()
+            if method == "POST":
+                body = self._body()
+                return control.queue_content(str(body.get("topic", "")),
+                                             int(body.get("count", 3) or 3),
+                                             str(body.get("style", "")))
+
+        if head == "workers":
+            if method == "GET":
+                return control.workers()
+            if method == "POST":
+                body = self._body()
+                return control.set_workers_paused(bool(body.get("paused", True)))
 
         if head == "costs" and method == "GET":
             return control.costs()
