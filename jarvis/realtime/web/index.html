@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0a12">
+<title>JARVIS</title>
+<style>
+  :root {
+    --bg: #0a0a12; --card: #16162a; --line: #26263c;
+    --accent: #00d4ff; --text: #e8e8f0; --muted: #8a8aa0;
+    --danger: #ff5c5c; --ok: #3ddc84;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 15px/1.5 "Segoe UI", -apple-system, system-ui, sans-serif;
+    display: flex; flex-direction: column; align-items: center;
+    padding: max(20px, env(safe-area-inset-top)) 18px
+             max(20px, env(safe-area-inset-bottom));
+    gap: 18px;
+  }
+  h1 { font-size: 19px; letter-spacing: 3px; margin: 0; font-weight: 600; }
+  .muted { color: var(--muted); font-size: 13px; text-align: center; }
+
+  #orb { width: min(58vw, 230px); aspect-ratio: 1; position: relative; }
+  #orb canvas { width: 100%; height: 100%; display: block; }
+
+  #status { min-height: 22px; font-size: 14px; color: var(--muted); }
+  #status.live { color: var(--accent); }
+  #status.error { color: var(--danger); }
+
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+  button {
+    background: var(--card); color: var(--text); border: 1px solid var(--line);
+    border-radius: 11px; padding: 13px 20px; font-size: 15px; cursor: pointer;
+    min-height: 48px;
+  }
+  button.primary { background: var(--accent); color: #04141a; font-weight: 600;
+                   border-color: var(--accent); }
+  button.on { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: .5; }
+
+  input {
+    background: var(--card); border: 1px solid var(--line); color: var(--text);
+    border-radius: 11px; padding: 13px; font-size: 17px; text-align: center;
+    width: 170px; letter-spacing: 5px;
+  }
+
+  #log {
+    width: 100%; max-width: 620px; flex: 1; min-height: 120px; overflow-y: auto;
+    background: var(--card); border: 1px solid var(--line); border-radius: 13px;
+    padding: 14px; font-size: 14px;
+  }
+  .line { margin-bottom: 11px; }
+  .who { color: var(--accent); font-weight: 600; font-size: 12px;
+         text-transform: uppercase; letter-spacing: .5px; }
+  .line.jarvis .who { color: var(--ok); }
+
+  video { width: 118px; border-radius: 11px; border: 1px solid var(--line);
+          transform: scaleX(-1); display: none; }
+  video.on { display: block; }
+</style>
+</head>
+<body>
+  <h1>◉ JARVIS</h1>
+  <div id="orb"><canvas></canvas></div>
+  <div id="status">Not connected</div>
+
+  <div id="gate" class="controls" style="display:none">
+    <input id="pin" inputmode="numeric" pattern="[0-9]*" maxlength="6"
+           placeholder="······" aria-label="Access code">
+  </div>
+
+  <div class="controls">
+    <button id="connect" class="primary">Start talking</button>
+    <button id="mute" disabled>Mute</button>
+    <button id="camera" disabled>Camera</button>
+  </div>
+
+  <video id="preview" autoplay muted playsinline></video>
+  <div id="log"><div class="muted">Connect, then just talk. You can interrupt at any time.</div></div>
+  <div class="muted">Audio runs through this page, so your PC's speaker settings don't matter.</div>
+
+<script type="module">
+const $ = (id) => document.getElementById(id);
+
+// The SDK is pinned to an exact version. "@2" would quietly follow every future
+// 2.x release, and a static `import` that fails takes the whole module with it -
+// no handler runs, nothing is logged where you'd look, the page just sits there
+// looking fine and doing nothing. So: load it by hand, try a second CDN, and if
+// both are unreachable say so on screen.
+const SDK = [
+  "https://cdn.jsdelivr.net/npm/livekit-client@2.22.3/dist/livekit-client.esm.mjs",
+  "https://unpkg.com/livekit-client@2.22.3/dist/livekit-client.esm.mjs",
+];
+
+let Room, RoomEvent, Track, createLocalVideoTrack;
+try {
+  let sdk = null, lastError = null;
+  for (const url of SDK) {
+    try { sdk = await import(url); break; } catch (err) { lastError = err; }
+  }
+  if (!sdk) throw lastError || new Error("no CDN reachable");
+  ({ Room, RoomEvent, Track, createLocalVideoTrack } = sdk);
+} catch (err) {
+  const el = $("status");
+  el.className = "error";
+  el.textContent = "Couldn't load the voice library - check this machine's "
+                 + "internet connection, then reload.";
+  $("connect").disabled = true;
+  throw err;
+}
+
+const statusEl = $("status"), logEl = $("log");
+let room = null, camTrack = null, audioEl = null;
+
+function setStatus(text, kind = "") {
+  statusEl.textContent = text;
+  statusEl.className = kind;
+}
+
+function say(who, text, cls = "") {
+  const first = logEl.querySelector(".muted");
+  if (first) first.remove();
+  const line = document.createElement("div");
+  line.className = "line " + cls;
+  line.innerHTML = `<div class="who"></div><div class="body"></div>`;
+  line.querySelector(".who").textContent = who;
+  line.querySelector(".body").textContent = text;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// ---- the orb ------------------------------------------------------------
+const canvas = document.querySelector("#orb canvas");
+const ctx = canvas.getContext("2d");
+let level = 0, phase = 0, speaking = false;
+
+function sizeCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+addEventListener("resize", sizeCanvas);
+sizeCanvas();
+
+function draw() {
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  const cx = w / 2, cy = h / 2;
+  ctx.clearRect(0, 0, w, h);
+  phase += speaking ? 0.09 : 0.03;
+
+  const base = Math.min(w, h) * 0.22;
+  const r = base + Math.sin(phase) * base * 0.07 + level * base * 0.55;
+
+  for (let i = 0; i < 3; i++) {
+    const t = ((phase / 6.28) + i / 3) % 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * (1.2 + t * 0.9), 0, 6.283);
+    ctx.strokeStyle = `rgba(0,212,255,${0.32 * (1 - t) * (0.35 + level)})`;
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+  }
+
+  const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 1.7);
+  glow.addColorStop(0, "rgba(0,212,255,.85)");
+  glow.addColorStop(.45, "rgba(0,212,255,.28)");
+  glow.addColorStop(1, "rgba(0,212,255,0)");
+  ctx.fillStyle = glow;
+  ctx.beginPath(); ctx.arc(cx, cy, r * 1.7, 0, 6.283); ctx.fill();
+
+  ctx.fillStyle = "rgba(0,212,255,.95)";
+  ctx.beginPath(); ctx.arc(cx, cy, r * 0.44, 0, 6.283); ctx.fill();
+  requestAnimationFrame(draw);
+}
+draw();
+
+// ---- connecting ---------------------------------------------------------
+const config = await fetch("/config").then((r) => r.json()).catch(() => ({}));
+if (config.needs_pin) $("gate").style.display = "flex";
+
+$("connect").onclick = async () => {
+  if (room) { await room.disconnect(); return; }
+
+  $("connect").disabled = true;
+  setStatus("Connecting…");
+  try {
+    const pin = $("pin").value.trim();
+    const res = await fetch("/token" + (pin ? `?pin=${encodeURIComponent(pin)}` : ""));
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "could not get a token");
+
+    room = new Room({ adaptiveStream: true, dynacast: true });
+
+    room.on(RoomEvent.TrackSubscribed, (track) => {
+      if (track.kind === Track.Kind.Audio) {
+        audioEl = track.attach();
+        audioEl.autoplay = true;
+        document.body.appendChild(audioEl);
+      }
+    });
+    room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
+      speaking = speakers.some((s) => s.identity !== room.localParticipant.identity);
+    });
+    // A phone that changes Wi-Fi cell drops the connection for a few seconds.
+    // Say so, rather than going quiet and looking broken.
+    room.on(RoomEvent.Reconnecting, () => setStatus("Reconnecting…"));
+    room.on(RoomEvent.Reconnected, () => setStatus("Listening — just talk", "live"));
+    // Browsers block audio that wasn't started by a tap. If that happens the
+    // page is silent with no error at all, so offer the tap.
+    room.on(RoomEvent.AudioPlaybackStatusChanged, () => {
+      if (room && !room.canPlaybackAudio) {
+        setStatus("Tap anywhere to allow sound", "error");
+        const unlock = async () => {
+          try { await room.startAudio(); setStatus("Listening — just talk", "live"); }
+          catch (_) { /* they'll get another tap */ }
+        };
+        document.body.addEventListener("click", unlock, { once: true });
+      }
+    });
+    room.on(RoomEvent.MediaDevicesError, (err) => {
+      setStatus("Microphone blocked — allow it in your browser, then reload",
+                "error");
+      console.error(err);
+    });
+    room.on(RoomEvent.Disconnected, () => {
+      setStatus("Disconnected");
+      $("connect").textContent = "Start talking";
+      $("mute").disabled = $("camera").disabled = true;
+      $("mute").textContent = "Mute";
+      $("mute").classList.remove("on");
+      $("camera").classList.remove("on");
+      $("preview").classList.remove("on");
+      if (camTrack) { camTrack.stop(); camTrack = null; }
+      if (audioEl) { audioEl.remove(); audioEl = null; }
+      room = null;
+    });
+    room.on(RoomEvent.TranscriptionReceived, (segments, participant) => {
+      for (const seg of segments) {
+        if (!seg.final) continue;
+        const mine = participant?.identity === room.localParticipant.identity;
+        say(mine ? "you" : "jarvis", seg.text, mine ? "" : "jarvis");
+      }
+    });
+
+    await room.connect(data.url, data.token);
+    await room.localParticipant.setMicrophoneEnabled(true);
+
+    // Keep the orb alive with your own microphone level.
+    setInterval(() => {
+      const p = room?.localParticipant;
+      level = p ? Math.min(1, (p.audioLevel || 0) * 6) : 0;
+    }, 90);
+
+    setStatus("Listening — just talk", "live");
+    $("connect").textContent = "Hang up";
+    $("mute").disabled = $("camera").disabled = false;
+  } catch (err) {
+    // Leave nothing half-connected behind, or the next attempt inherits it.
+    if (room) { try { await room.disconnect(); } catch (_) {} room = null; }
+    setStatus(err.message || String(err), "error");
+  } finally {
+    $("connect").disabled = false;
+  }
+};
+
+addEventListener("pagehide", () => { if (room) room.disconnect(); });
+
+$("mute").onclick = async () => {
+  if (!room) return;
+  const on = room.localParticipant.isMicrophoneEnabled;
+  await room.localParticipant.setMicrophoneEnabled(!on);
+  $("mute").textContent = on ? "Unmute" : "Mute";
+  $("mute").classList.toggle("on", on);
+};
+
+$("camera").onclick = async () => {
+  if (!room) return;
+  if (camTrack) {
+    await room.localParticipant.unpublishTrack(camTrack);
+    camTrack.stop();
+    camTrack = null;
+    $("preview").classList.remove("on");
+    $("camera").classList.remove("on");
+    return;
+  }
+  camTrack = await createLocalVideoTrack({ facingMode: "user" });
+  await room.localParticipant.publishTrack(camTrack);
+  camTrack.attach($("preview"));
+  $("preview").classList.add("on");
+  $("camera").classList.add("on");
+};
+</script>
+</body>
+</html>

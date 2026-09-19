@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+.DS_Store
+Thumbs.db
+
+# uv builds this if it is ever run from the repo root. Nothing here uses uv at
+# the root - the launchers either pass --no-project or run inside jarvis_new -
+# so a lockfile appearing here means something ran in the wrong place. Ignored
+# so it can never be committed again and collide with the one on your machine.
+uv.lock
+!jarvis_new/uv.lock

@@ -1,0 +1,88 @@
+{
+  "id": "tiktok_factory",
+  "name": "Overnight TikTok Factory",
+  "description": "At 2am: find what's trending, write short scripts, voice them, generate matching clips, cut them together, and stage the finished videos ready to post. Posting itself is left to you unless you authorise it below.",
+  "schedule": "0 2 * * *",
+  "enabled": false,
+  "tags": ["content", "video", "income"],
+  "max_minutes": 180,
+  "authorizations": [
+    "You have permission to spend up to $5 on video generation tonight."
+  ],
+  "steps": [
+    {
+      "name": "Find what's trending",
+      "plugin": "web_search",
+      "params": {
+        "query": "trending short form video topics this week finance motivation",
+        "num_results": 15
+      },
+      "output_key": "trends"
+    },
+    {
+      "name": "Write five scripts",
+      "plugin": "llm",
+      "params": {
+        "system": "You write short-form video scripts that hold attention from the first second. No intros, no 'welcome back', no sign-offs.",
+        "prompt": "Trending right now:\n\n{trends}\n\nWrite 5 scripts of about 30 seconds each (roughly 70 words). Return a JSON array where each item has: title, script, hashtags (array of 4), visual (a one-line description of what should be on screen).",
+        "json": true,
+        "max_tokens": 4000
+      },
+      "output_key": "scripts"
+    },
+    {
+      "name": "Record the voiceovers",
+      "plugin": "text_to_speech",
+      "params": { "texts": "{scripts[*].script}" },
+      "output_key": "voiceovers",
+      "condition": "scripts",
+      "on_error": "continue"
+    },
+    {
+      "name": "Generate the visuals",
+      "plugin": "generate_video",
+      "params": {
+        "prompt": "{scripts[0].visual}",
+        "duration": 10,
+        "aspect_ratio": "9:16"
+      },
+      "output_key": "clips",
+      "on_error": "continue",
+      "retries": 2
+    },
+    {
+      "name": "Cut them together",
+      "plugin": "merge_video_audio",
+      "params": {
+        "videos": "{clips.file}",
+        "audios": "{voiceovers.files}"
+      },
+      "output_key": "finished",
+      "condition": "voiceovers",
+      "on_error": "continue"
+    },
+    {
+      "name": "Stage them for posting",
+      "plugin": "post_to_social",
+      "params": {
+        "platform": "tiktok",
+        "file": "{finished.files[0]}",
+        "caption": "{scripts[0].title}",
+        "hashtags": "{scripts[0].hashtags}",
+        "mode": "prepare"
+      },
+      "output_key": "staged",
+      "condition": "finished",
+      "on_error": "continue"
+    },
+    {
+      "name": "Report back",
+      "plugin": "notify",
+      "params": {
+        "title": "Overnight video run finished",
+        "message": "Scripts written and staged. Check the to_post folder - they're ready for you to review and publish.",
+        "method": "desktop"
+      }
+    }
+  ]
+}

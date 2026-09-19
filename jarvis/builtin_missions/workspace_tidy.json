@@ -1,0 +1,33 @@
+{
+  "id": "workspace_tidy",
+  "name": "Nightly Workspace Tidy",
+  "description": "Sorts whatever piled up in the workspace into folders by type and writes a one-line summary. Touches nothing outside the workspace, so it needs no permissions at all.",
+  "schedule": "0 23 * * *",
+  "enabled": false,
+  "tags": ["housekeeping", "daily"],
+  "steps": [
+    {
+      "name": "See what's lying around",
+      "plugin": "list_files",
+      "params": { "pattern": "*" },
+      "output_key": "files"
+    },
+    {
+      "name": "Sort it out",
+      "plugin": "ai",
+      "params": {
+        "instruction": "Here is what is currently in the workspace folder:\n\n{files}\n\nTidy it: move videos into 'video/', images into 'images/', audio into 'audio/', documents into 'docs/'. Use the move_file tool. Leave folders that already exist alone, and don't touch anything outside the workspace. When you're done, say in one sentence what you moved."
+      },
+      "output_key": "tidy_report"
+    },
+    {
+      "name": "Log what happened",
+      "plugin": "write_file",
+      "params": {
+        "path": "logs/tidy-log.md",
+        "content": "\n## Tidy run\n{tidy_report}\n",
+        "append": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+# The minimum that gets JARVIS thinking and running missions.
+# Install this if you only want text chat + automation, no voice, no GUI.
+anthropic>=1.0.0
+apscheduler>=3.10.0
+cryptography>=42.0.0
+requests>=2.31.0

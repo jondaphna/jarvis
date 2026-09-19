@@ -1,0 +1,43 @@
+{
+  "id": "my_mission",
+  "name": "What this mission does",
+  "description": "One sentence you'll still understand in three months.",
+
+  "schedule": "0 2 * * *",
+  "_schedule_help": "Minute Hour DayOfMonth Month DayOfWeek. '0 2 * * *' = 2am daily. '30 8 * * 1-5' = 8:30am weekdays. '0 */4 * * *' = every 4 hours. Leave blank to run it manually only.",
+
+  "enabled": false,
+
+  "authorizations": [
+    "_help: Sentences here let this mission do high-risk things unattended. Only add what you actually mean, and only while you want it. Examples: 'You have permission to post to TikTok, today only.' or 'You have permission to spend up to $10 on video generation.' Delete this line and the examples below if the mission doesn't need any."
+  ],
+
+  "steps": [
+    {
+      "name": "Step one - gather something",
+      "plugin": "web_search",
+      "params": { "query": "what to look up", "num_results": 8 },
+      "output_key": "research"
+    },
+    {
+      "name": "Step two - think about it",
+      "plugin": "llm",
+      "params": {
+        "prompt": "Using this: {research}\n\nWrite the thing I actually want.",
+        "max_tokens": 2000
+      },
+      "output_key": "result"
+    },
+    {
+      "name": "Step three - do something with it",
+      "plugin": "write_file",
+      "params": { "path": "output/result.md", "content": "{result}" },
+      "on_error": "continue"
+    }
+  ],
+
+  "_plugins_help": "Run `jarvis plugins` to list every plugin and tool you can use here. Built-ins include: web_search, read_webpage, llm, ai, text_to_speech, generate_image, generate_video, generate_avatar_video, merge_video_audio, post_to_social, notify, write_file, read_file, list_files, move_file, run_command, wait.",
+  "_placeholders_help": "Use {output_key} to reuse an earlier step's result. {scripts[*].title} pulls one field from every item in a list. {results[0].url} takes the first one.",
+  "_on_error_help": "Each step takes on_error: 'stop' (default), 'continue' (skip it and carry on), or 'retry' (with retries: 3).",
+  "_condition_help": "Add condition: 'some_output_key' to skip a step when an earlier step produced nothing."
+}
