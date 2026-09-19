@@ -137,3 +137,74 @@ def test_starting_twice_keeps_one_thread():
 
 def test_the_shared_host_is_one_object():
     assert workers.host() is workers.host()
+
+
+# --------------------------------------------------------------------------- #
+# Pausing
+# --------------------------------------------------------------------------- #
+
+def test_pausing_holds_new_jobs_without_losing_them(host):
+    """Pause is not stop. The queue survives, and resuming runs it.
+
+    The bug this guards against is the obvious implementation: stopping the
+    host on pause. That tears the loop down, the queue goes with it, and the
+    jobs somebody queued before going to bed are gone in the morning.
+    """
+    ran = threading.Event()
+
+    host.pause()
+    assert host.paused is True
+
+    ref = host.submit(ran.set, name="held")
+    assert ref is not None
+    # Long enough that a worker which was going to take it, would have.
+    assert not ran.wait(timeout=0.5), "a paused host started a job anyway"
+    assert host.job(ref).status == "queued"
+
+    host.resume()
+    assert host.paused is False
+    assert ran.wait(timeout=5.0), "resuming did not release the queued job"
+    assert wait_for(lambda: host.job(ref).status == "done")
+
+
+def test_a_job_already_running_is_left_alone_by_pause(host):
+    """Killing a render halfway is worse than finishing it."""
+    release = threading.Event()
+    started = threading.Event()
+
+    def slow():
+        started.set()
+        release.wait(timeout=5.0)
+        return "finished"
+
+    ref = host.submit(slow, name="in flight")
+    assert started.wait(timeout=5.0)
+
+    host.pause()
+    release.set()
+    assert wait_for(lambda: host.job(ref).status == "done")
+    assert host.job(ref).result == "finished"
+
+
+def test_the_status_says_whether_it_is_paused(host):
+    """The dashboard draws this, so it has to be in the payload."""
+    assert host.status()["paused"] is False
+    host.pause()
+    assert host.status()["paused"] is True
+    host.resume()
+    assert host.status()["paused"] is False
+
+
+def test_pausing_before_the_host_starts_still_holds(host):
+    """The flag is read when the loop is built, not only while it is up."""
+    quiet = workers.WorkerHost(name="test-workers-paused")
+    try:
+        quiet.set_paused(True)
+        ran = threading.Event()
+        ref = quiet.submit(ran.set, name="held from cold")
+        assert ref is not None
+        assert not ran.wait(timeout=0.5)
+        quiet.resume()
+        assert ran.wait(timeout=5.0)
+    finally:
+        quiet.stop()

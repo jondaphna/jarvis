@@ -130,6 +130,15 @@ class WorkerHost:
         self._current: dict[str, asyncio.Future[Any]] = {}
         self._lock = threading.RLock()
         self._ready = threading.Event()
+        #: Paused means "start nothing new". A job already running is left
+        #: alone: killing a render halfway is worse than finishing it, and the
+        #: reason anyone presses pause is that they want the machine quiet
+        #: from now on, not that they want the last ten minutes thrown away.
+        self._paused = False
+        #: The gate the workers wait on, held open unless paused. It belongs
+        #: to the worker loop, so it is created there and only ever touched
+        #: from there - `pause` and `resume` hop across with call_soon_threadsafe.
+        self._gate: asyncio.Event | None = None
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -158,6 +167,10 @@ class WorkerHost:
         asyncio.set_event_loop(loop)
         self._loop = loop
         self._queue = asyncio.Queue()
+        gate = asyncio.Event()
+        if not self._paused:
+            gate.set()
+        self._gate = gate
         try:
             self._workers = [loop.create_task(self._worker(i))
                              for i in range(self.concurrency)]
@@ -194,6 +207,38 @@ class WorkerHost:
         if thread is not None and thread.is_alive():
             thread.join(timeout=timeout)
         self._ready.clear()
+
+    # ------------------------------------------------------------------ #
+    # Pausing
+    # ------------------------------------------------------------------ #
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    def set_paused(self, paused: bool) -> bool:
+        """Hold back new jobs, or let them through again.
+
+        Deliberately not `stop()`. Stopping tears the loop down, which loses
+        the queue and the in-memory history with it, and the next submit
+        quietly builds a new host; pausing keeps everything where it is, so
+        resuming picks the queue up exactly where it was left. Returns the
+        state it settled in, which is what the panel draws.
+        """
+        with self._lock:
+            self._paused = bool(paused)
+            gate, loop = self._gate, self._loop
+        if gate is not None and loop is not None:
+            act = gate.clear if paused else gate.set
+            with contextlib.suppress(Exception):
+                loop.call_soon_threadsafe(act)
+        return self._paused
+
+    def pause(self) -> bool:
+        return self.set_paused(True)
+
+    def resume(self) -> bool:
+        return self.set_paused(False)
 
     # ------------------------------------------------------------------ #
     # Submitting
@@ -299,11 +344,24 @@ class WorkerHost:
         queue = self._queue
         assert queue is not None
         while True:
+            await self._wait_for_gate()
             job, work, args, kwargs, backoff = await queue.get()
             try:
+                # Checked twice on purpose. The first wait keeps a paused host
+                # from pulling anything off the queue at all; the second
+                # catches a pause that arrived while this worker was blocked
+                # on `get`, which would otherwise start one more job after the
+                # button was pressed. The job keeps its place and stays
+                # "queued", so the panel reports the truth either way.
+                await self._wait_for_gate()
                 await self._run_one(job, work, args, kwargs, backoff)
             finally:
                 queue.task_done()
+
+    async def _wait_for_gate(self) -> None:
+        gate = self._gate
+        if gate is not None:
+            await gate.wait()
 
     async def _run_one(self, job: Job, work: Callable[..., Any],
                        args: tuple[Any, ...], kwargs: dict[str, Any],
@@ -444,7 +502,8 @@ class WorkerHost:
 
         live = [job for job in jobs if job["status"] not in FINAL]
         done = [job for job in reversed(jobs) if job["status"] in FINAL]
-        return {"running": self.running, "queued": queued, "in_progress": running,
+        return {"running": self.running, "paused": self._paused,
+                "queued": queued, "in_progress": running,
                 "concurrency": self.concurrency,
                 "jobs": live + done[:max(0, HISTORY - len(live))]}
 

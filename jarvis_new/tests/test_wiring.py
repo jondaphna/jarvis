@@ -28,11 +28,25 @@ SRC = AGENT / "src"
 REPO = AGENT.parent                            # the repository root
 FRONTEND = AGENT / "frontend"
 PANEL = FRONTEND / "components" / "app" / "control-panel.tsx"
+CONSOLE = FRONTEND / "components" / "dashboard"
 PROXY = FRONTEND / "app" / "api" / "control" / "[...path]" / "route.ts"
 
 
 def panel_source() -> str:
-    return PANEL.read_text(encoding="utf-8")
+    """Every file that talks to the control service, as one string.
+
+    The interface is no longer one file: the console lives in
+    `components/dashboard`, and the settings tabs it draws are still in
+    `control-panel.tsx`. The checks below - that every route exists, that
+    every field is sent, that every method is proxied - are worth nothing if
+    they only see one of them, and the half they would miss is the new half.
+    """
+    parts = [PANEL.read_text(encoding="utf-8")]
+    parts += [path.read_text(encoding="utf-8")
+              for path in sorted(CONSOLE.glob("*.tsx"))]
+    parts += [(FRONTEND / "lib" / "jarvis.ts").read_text(encoding="utf-8"),
+              (FRONTEND / "hooks" / "useControl.ts").read_text(encoding="utf-8")]
+    return "\n".join(parts)
 
 
 def control_source() -> str:
@@ -290,4 +304,5 @@ class TestTheSilentFailures:
         panel = panel_source()
         assert (REPO / "butler-settings.bat").exists()
         assert (FRONTEND / "app" / "settings" / "page.tsx").exists()
+        assert (FRONTEND / "app" / "dashboard" / "page.tsx").exists()
         assert "Ctrl+Shift+S" in panel or "shiftKey" in panel
