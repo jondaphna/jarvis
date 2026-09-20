@@ -55,6 +55,30 @@ def token_path() -> Path:
     return paths.ROOT / "control.token"
 
 
+#: How many times to try to establish the token before giving up. More than
+#: the old three, because each round now waits: the case being survived is two
+#: processes starting together, and the loser needs the winner to have
+#: finished writing, not just to have created the file.
+TOKEN_ATTEMPTS = 5
+
+#: Base delay between attempts, multiplied by the attempt number.
+TOKEN_RETRY_DELAY = 0.05
+
+#: How old an empty token file has to be before it counts as wreckage rather
+#: than as a process that is about to write it. Generous: the cost of waiting
+#: is a slow start-up, and the cost of being wrong is two processes holding
+#: different tokens, which presents as a dashboard that silently does nothing.
+TOKEN_STALE_SECONDS = 30.0
+
+
+def _token_file_is_stale(path: Path) -> bool:
+    """Is this empty token file wreckage rather than a write in progress?"""
+    try:
+        return (time.time() - path.stat().st_mtime) > TOKEN_STALE_SECONDS
+    except OSError:
+        return False
+
+
 def load_token() -> str:
     """The shared secret, created once and reused.
 
@@ -63,15 +87,32 @@ def load_token() -> str:
     control API alongside the one `butler-agent.bat` may already have started
     - both used to find no file, both wrote, and each went on believing its
     own token was the one. Whoever loses the race now reads the winner's.
+
+    Raises rather than inventing a token it could not store. See the comment
+    at the end for why that is the safer failure.
     """
     path = token_path()
-    for _ in range(3):
+    last_error = ""
+    for attempt in range(TOKEN_ATTEMPTS):
         try:
             existing = path.read_text(encoding="utf-8").strip()
             if existing:
                 return existing
-        except OSError:
+            # The file is there but empty. That is either the winner of the
+            # race a moment before it writes, or a token file a crash left
+            # behind. Telling those apart by *age* is the only safe way:
+            # deleting it because it happens to be empty right now is deleting
+            # the file another process is in the middle of writing, which is
+            # how two processes end up with different tokens.
+            if not _token_file_is_stale(path):
+                time.sleep(TOKEN_RETRY_DELAY * (attempt + 1))
+                continue
+            with contextlib.suppress(OSError):
+                path.unlink()
+        except FileNotFoundError:
             pass
+        except OSError as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
 
         fresh = secrets.token_urlsafe(32)
         try:
@@ -80,23 +121,32 @@ def load_token() -> str:
             handle = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
             continue                        # somebody else won; read theirs
-        except OSError:
-            # No exclusive create available here. Fall back to the old way
-            # rather than leaving the API with no token at all.
-            path.write_text(fresh, encoding="utf-8")
-            with contextlib.suppress(OSError):
-                path.chmod(0o600)
-            return fresh
+        except OSError as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            time.sleep(TOKEN_RETRY_DELAY * (attempt + 1))
+            continue
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
             stream.write(fresh)
+            stream.flush()
+            with contextlib.suppress(OSError):
+                os.fsync(stream.fileno())
         with contextlib.suppress(OSError):  # best effort; Windows ignores mode
             path.chmod(0o600)
         return fresh
 
-    # Three rounds of losing the race and still finding nothing to read means
-    # the file cannot be relied on. An in-memory token is still a working
-    # boundary for this process.
-    return secrets.token_urlsafe(32)
+    # This used to return a fresh in-memory token here, on the reasoning that
+    # a token only this process knows is still a boundary. It is not: the
+    # dashboard proxy reads the *file* to get the token it sends, so a token
+    # that never reached the file is a control API that refuses every request
+    # the dashboard makes, and the visible symptom is a panel that has simply
+    # stopped working with no explanation. Refusing to start says which file
+    # and why.
+    detail = f" ({last_error})" if last_error else ""
+    raise RuntimeError(
+        f"couldn't establish the control token at {path}{detail}. The "
+        f"dashboard reads this file to talk to JARVIS, so a token that isn't "
+        f"in it is no use. Check the file's permissions, or delete it and "
+        f"start again.")
 
 
 # --------------------------------------------------------------------------- #

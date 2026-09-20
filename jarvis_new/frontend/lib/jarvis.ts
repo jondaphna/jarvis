@@ -64,10 +64,29 @@ export type Permission = {
  * "workers idle" while the other process was busy.
  */
 export type ServicesState = {
-  /** 'running' | 'stopped' | 'killed' | 'unknown'. `killed` was chosen. */
+  /**
+   * 'running' | 'degraded' | 'stopped' | 'killed' | 'unknown'. `killed` was
+   * chosen; `degraded` means it came up but something in it did not.
+   */
   state: string;
   running: boolean;
+  /** Up, but the worker host or the routine ticker failed to start. */
+  degraded: boolean;
   killed: boolean;
+  /**
+   * The durable stop latch. Unlike `killed`, this is a file on the machine,
+   * so it is still true after closing the window and opening it again, and
+   * every JARVIS process on the machine reads the same one.
+   */
+  execution_disabled: boolean;
+  latch?: {
+    disabled: boolean;
+    at?: string;
+    reason?: string;
+    by?: string;
+    generation?: number;
+    path?: string;
+  };
   owner: string;
   this_process: string;
   owns_services: boolean;

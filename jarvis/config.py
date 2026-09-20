@@ -483,9 +483,20 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 class Settings:
     """Plain-JSON preferences with dotted-path access and deep-merged defaults."""
 
-    def __init__(self, data: dict[str, Any] | None = None) -> None:
+    def __init__(self, data: dict[str, Any] | None = None,
+                 unreadable: bool = False) -> None:
         self._lock = threading.RLock()
         self._data = _deep_merge(DEFAULT_SETTINGS, data or {})
+        #: True when these settings are shipped defaults standing in for a
+        #: file that could not be read. Preferences can live with that - a
+        #: damaged file should not stop the assistant talking. Permissions
+        #: cannot: every capability that ships switched on would switch itself
+        #: back on, and the one thing a settings file gets damaged by is being
+        #: hand-edited, which is often somebody switching something off. So
+        #: `permissions.allowed` refuses everything while this is set, and the
+        #: condition is repaired by fixing or deleting the file, not by
+        #: guessing at what it said.
+        self.unreadable = bool(unreadable)
 
     #: Old default values that should be replaced rather than preserved. A
     #: saved settings file always wins over a default, so shipping a better
@@ -513,6 +524,7 @@ class Settings:
 
     @classmethod
     def load(cls) -> "Settings":
+        damaged = False
         if paths.CONFIG_FILE.exists():
             broken: Exception | None = None
             try:
@@ -530,6 +542,7 @@ class Settings:
                 # "all my settings reset themselves".
                 raw = {}
                 _preserve_broken_settings(broken)
+                damaged = True
         else:
             raw = {}
 
@@ -548,7 +561,7 @@ class Settings:
                 if str(block.get(tail, "")).strip() in {s.strip() for s in stale}:
                     block.pop(tail, None)
 
-        return cls(raw)
+        return cls(raw, unreadable=damaged)
 
     def save(self) -> None:
         with self._lock:

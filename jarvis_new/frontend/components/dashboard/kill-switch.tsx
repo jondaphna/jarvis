@@ -24,6 +24,13 @@ import { Action, Card, CardTitle, Pill, Row } from './kit';
  * **It can be undone.** A stop with no way back is a trap - the only remedy
  * would be closing the window and running the launcher again, and somebody
  * will press it to see what it does. Killed is a state you can come back from.
+ *
+ * The September 2026 re-audit found the second of those was overstating the
+ * first: "nothing new will start after it" was not true, because submitting a
+ * job restarted the stopped worker host, and closing the window forgot the
+ * kill entirely. Both are fixed in `services.py` and `latch.py`, and the
+ * wording here now matches what the code actually does - including saying
+ * that the stop outlasts closing the window, which it did not before.
  */
 
 export function KillSwitch({
@@ -39,7 +46,10 @@ export function KillSwitch({
   const [stopped, setStopped] = useState<number | null>(null);
 
   const running = services?.running ?? false;
-  const killed = services?.killed ?? false;
+  const degraded = services?.degraded ?? false;
+  // The latch, where it is known, rather than this process's memory of it:
+  // one is a file on the machine, the other is forgotten on every restart.
+  const killed = services?.execution_disabled ?? services?.killed ?? false;
   const workers = services?.workers;
   const inFlight = workers?.in_progress ?? 0;
   const queued = workers?.queued ?? 0;
@@ -67,12 +77,14 @@ export function KillSwitch({
         title="Kill switch"
         hint="Stops the background workers and the routine ticker. The call you are on is not affected."
         right={
-          running ? (
+          killed ? (
+            <Pill tone="bad">stopped by you</Pill>
+          ) : degraded ? (
+            <Pill tone="warn">running, with a problem</Pill>
+          ) : running ? (
             <Pill tone="good" pulse>
               services running
             </Pill>
-          ) : killed ? (
-            <Pill tone="bad">stopped by you</Pill>
           ) : (
             <Pill tone="neutral">not running</Pill>
           )
@@ -121,6 +133,13 @@ export function KillSwitch({
         </p>
       )}
 
+      {killed && !armed && (
+        <p className="mt-3 text-xs leading-relaxed text-white/60">
+          This stop is written to disk, so it survives closing the window and opening JARVIS again.
+          Nothing runs in the background until you start it here.
+        </p>
+      )}
+
       {armed ? (
         <div className="mt-4 rounded-xl bg-rose-500/10 p-4 ring-1 ring-rose-400/25 ring-inset">
           <p className="flex items-start gap-2 text-sm text-rose-100">
@@ -131,9 +150,10 @@ export function KillSwitch({
             </span>
           </p>
           <p className="mt-2 text-xs leading-relaxed text-rose-200/70">
-            Scheduled routines will not fire until you start them again. Work already part-way
-            through a render or a paid API call finishes on its own — it cannot be interrupted from
-            outside — but nothing new will start after it.
+            Nothing new starts after this: not a routine, not a voice command, not the next launch
+            of JARVIS. The stop is written to disk, so it outlasts closing this window, and only
+            &ldquo;Start them again&rdquo; clears it. Work already part-way through a render or a
+            paid API call finishes on its own — it cannot be interrupted from outside.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             <Action icon={OctagonX} tone="danger" busy={busy} onClick={() => void act('kill')}>

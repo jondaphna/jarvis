@@ -14,6 +14,7 @@ state with a reason attached.
 import asyncio
 import json
 import threading
+import time
 
 import pytest
 
@@ -59,6 +60,15 @@ def home(tmp_path, monkeypatch):
     from jarvis import paths
 
     paths.refresh()
+    # The content engine ships switched off, and `queue_scripts` now refuses
+    # when it is off rather than relying on the tool having been filtered out
+    # of the model's list. A test that exercises the engine is a test of a
+    # machine where somebody turned it on, so turn it on.
+    from jarvis.config import Settings
+
+    settings = Settings.load()
+    settings.set("permissions.content", True)
+    settings.save()
     yield tmp_path / "home"
     monkeypatch.delenv("JARVIS_HOME", raising=False)
     paths.refresh()
@@ -438,6 +448,120 @@ class TestJobLifecycle:
         assert "the model refused" in said
 
 
+class TestAJobIsFinishedAllAtOnceOrNotAtAll:
+    """What the September 2026 re-audit found (F14), inverted.
+
+    Scripts used to be inserted one at a time, committed, and only then was
+    the job marked done. Three things fell out of that, and script jobs ship
+    with retries on, so all three were reachable:
+
+    - a failure while storing assets left the row on "running" forever;
+    - the retry then inserted the whole batch a second time;
+    - a job that failed and was retried successfully kept its old error.
+
+    And a worker dying between the commit and the caller seeing the result
+    meant the retry paid for the same scripts twice.
+    """
+
+    def writer(self, count=2):
+        return Scriptwriter(backend=FakeBackend(json.dumps([GOOD] * count)))
+
+    def test_a_failure_while_storing_leaves_no_half_written_job(self, db, home,
+                                                                monkeypatch):
+        import sqlite3
+
+        ref = db.create_job("espresso")
+        monkeypatch.setattr(
+            db, "complete_scripts",
+            lambda *a, **k: (_ for _ in ()).throw(
+                sqlite3.OperationalError("simulated disk failure")))
+
+        with pytest.raises(sqlite3.OperationalError):
+            pipeline.run_script_job(ref, "espresso", count=2, db=db,
+                                    writer=self.writer())
+
+        job = db.job(ref)
+        assert job["status"] == store.STATUS_FAILED, (
+            "a job whose storage failed must not be left running forever")
+        assert db.assets(ref, kind="script") == [], (
+            "the assets were committed even though finishing the job failed")
+
+    def test_a_retry_does_not_duplicate_the_scripts(self, db, home):
+        """`complete_scripts` replaces the script assets, so the second
+        attempt leaves two, not four."""
+        ref = db.create_job("espresso")
+        pipeline.run_script_job(ref, "espresso", count=2, db=db,
+                                writer=self.writer())
+        assert len(db.assets(ref, kind="script")) == 2
+
+        # Force the work to run again rather than replaying the result.
+        db.start_job(ref, stage="script")
+        pipeline.run_script_job(ref, "espresso", count=2, db=db,
+                                writer=self.writer())
+        assert len(db.assets(ref, kind="script")) == 2
+
+    def test_replaying_a_finished_job_does_not_call_the_model_again(self, db,
+                                                                    home):
+        """Scripts cost money. A worker that died after committing must not
+        buy the same batch twice."""
+        ref = db.create_job("espresso")
+        first = pipeline.run_script_job(ref, "espresso", count=2, db=db,
+                                        writer=self.writer())
+
+        class Refuses:
+            def write(self, *args, **kwargs):
+                raise AssertionError("the model was asked a second time")
+
+        again = pipeline.run_script_job(ref, "espresso", count=2, db=db,
+                                        writer=Refuses())
+        assert again == first
+        assert len(db.assets(ref, kind="script")) == 2
+
+    def test_a_successful_retry_clears_the_old_error(self, db, home):
+        """Otherwise the panel shows a green job with a red reason under it."""
+        ref = db.create_job("espresso")
+        db.fail_job(ref, "the model refused", stage="script")
+        assert db.job(ref)["error"]
+
+        pipeline.run_script_job(ref, "espresso", count=2, db=db,
+                                writer=self.writer())
+        job = db.job(ref)
+        assert job["status"] == store.STATUS_DONE
+        assert job["error"] == ""
+
+    def test_restarting_a_job_clears_its_old_finish_time(self, db, home):
+        """A row that is running and yet finished in the past is not a state
+        the job was ever in."""
+        ref = db.create_job("espresso")
+        db.finish_job(ref, result={"done": True}, stage="script")
+        assert db.job(ref)["finished_at"]
+
+        db.start_job(ref, stage="script")
+        job = db.job(ref)
+        assert job["status"] == store.STATUS_RUNNING
+        assert not job["finished_at"]
+
+    def test_a_storage_failure_reports_itself_and_not_the_bookkeeping(
+            self, db, home, monkeypatch):
+        """If the database is what broke, `fail_job` breaks too. The caller
+        needs the original exception, not a second one about writing it down."""
+        import sqlite3
+
+        ref = db.create_job("espresso")
+
+        class Boom:
+            def write(self, *args, **kwargs):
+                raise RuntimeError("the model refused, which is the real cause")
+
+        monkeypatch.setattr(
+            db, "fail_job",
+            lambda *a, **k: (_ for _ in ()).throw(
+                sqlite3.OperationalError("and the database is down too")))
+
+        with pytest.raises(RuntimeError, match="the real cause"):
+            pipeline.run_script_job(ref, "espresso", db=db, writer=Boom())
+
+
 # --------------------------------------------------------------------------- #
 # The switch
 # --------------------------------------------------------------------------- #
@@ -497,6 +621,119 @@ class TestThePermissionSwitch:
                 return False if key == "permissions.content" else default
 
         assert "run the content engine" in permissions.summary(Off()).lower()
+
+
+class TestSwitchingItOffStopsTheWorkAndNotJustTheTool:
+    """What the September 2026 re-audit found (F04), inverted.
+
+    Removing a tool from the list the model is handed is the right first move
+    and is not enforcement. It does nothing about a routine, the dashboard, a
+    retry, or a tool handed to a conversation that was already open when the
+    switch was turned off - `queue_scripts` accepted all of those without
+    asking. So the check is at the work, where every caller passes through,
+    and again at the model call, which is the step that costs money.
+    """
+
+    def switch(self, on: bool) -> None:
+        from jarvis.config import Settings
+
+        settings = Settings.load()
+        settings.set("permissions.content", on)
+        settings.save()
+
+    def test_queuing_is_refused_outright(self, db, home):
+        self.switch(False)
+        with pytest.raises(PermissionError, match="switched off"):
+            pipeline.queue_scripts("a harmless topic", db=db)
+
+    def test_nothing_reaches_a_worker(self, db, home, monkeypatch):
+        """The acceptance the audit asked for: zero submissions, not a
+        submission that fails politely later."""
+        import workers
+
+        submitted: list[str] = []
+
+        class Recording:
+            def submit(self, *args, **kwargs):
+                submitted.append(kwargs.get("name", ""))
+                return "would-have-run"
+
+        monkeypatch.setattr(workers, "host", lambda: Recording())
+        self.switch(False)
+
+        with pytest.raises(PermissionError):
+            pipeline.queue_scripts("a harmless topic", db=db)
+        assert submitted == [], "a switched-off engine still queued work"
+
+    def test_switching_it_off_after_the_job_was_accepted_stops_the_model_call(
+            self, db, home):
+        """A job accepted while it was on, running after it was turned off -
+        a retry's backoff, or a restart picking the job back up. The model
+        call is the step that cannot be taken back, so it is the step that
+        has to ask again."""
+        self.switch(True)
+        ref = db.create_job("a harmless topic")
+
+        asked: list[str] = []
+
+        class Writer:
+            def write(self, *args, **kwargs):
+                asked.append("called the model")
+                return []
+
+        self.switch(False)
+
+        with pytest.raises(PermissionError, match="switched off before"):
+            pipeline.run_script_job(ref, "a harmless topic", db=db, writer=Writer())
+
+        assert asked == [], "the model was called after the engine was switched off"
+        assert db.job(ref)["status"] == store.STATUS_FAILED
+
+    def test_a_refusal_is_not_retried(self, home):
+        """A retry is for something that might work next time. A switch that
+        is off is not that, and retrying it just prints two alarming lines
+        about a job "failing" before refusing again."""
+        import workers
+
+        host = workers.WorkerHost()
+        assert host.start()
+        try:
+            attempts: list[int] = []
+
+            def refuses():
+                attempts.append(1)
+                raise PermissionError("the content engine is switched off")
+
+            ref = host.submit(refuses, name="refused work", retries=2)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if host.job(ref).status in ("failed", "cancelled"):
+                    break
+                time.sleep(0.01)
+
+            assert host.job(ref).status == "failed"
+            assert attempts == [1], f"a refusal was retried {len(attempts)} times"
+        finally:
+            host.stop(timeout=2)
+
+    def test_with_the_switch_on_nothing_is_in_the_way(self, db, home,
+                                                      monkeypatch):
+        """The check must not become a reason the engine never runs."""
+        import workers
+
+        submitted: list[str] = []
+
+        class Recording:
+            def submit(self, *args, **kwargs):
+                submitted.append(kwargs.get("name", ""))
+                return "queued"
+
+        monkeypatch.setattr(workers, "host", lambda: Recording())
+        self.switch(True)
+
+        ref = pipeline.queue_scripts("a harmless topic", db=db)
+        assert ref
+        assert len(submitted) == 1
 
 
 # --------------------------------------------------------------------------- #

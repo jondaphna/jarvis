@@ -37,7 +37,7 @@ from typing import Any
 from . import styles
 from .models import ReelScript
 from .scriptwriter import Scriptwriter
-from .store import KIND_SCRIPT, ContentStore, new_ref, store
+from .store import KIND_SCRIPT, STATUS_DONE, ContentStore, new_ref, store
 
 #: Extra attempts a script job gets. See `queue_scripts` for why it is safe.
 SCRIPT_RETRIES = 2
@@ -256,24 +256,46 @@ def run_script_job(ref: str, topic: str, count: int = 3, style: str = "",
     from a worker that died.
     """
     db = db or store()
-    db.start_job(ref, stage="script")
+
+    # A retry of a job that already finished is not a job. Writing scripts is
+    # a paid-for model call and this function is submitted with retries on, so
+    # without this check a failure *after* the work was committed - the worker
+    # dying between the commit and the caller seeing the result - buys the
+    # same scripts a second time and throws the first set away.
+    existing = db.job(ref)
+    if existing and existing.get("status") == STATUS_DONE and existing.get("result"):
+        return existing["result"]
+
     try:
+        # Checked again here, not only when the job was accepted. This runs on
+        # a worker thread some time after submission - after a retry's backoff,
+        # or after a restart picked the job back up - and the switch may have
+        # been turned off in between. The model call below is the step that
+        # cannot be taken back, so it is the step that has to ask.
+        import permissions
+
+        if not permissions.allowed("content"):
+            raise PermissionError(
+                "the content engine was switched off before this job ran")
+
+        db.start_job(ref, stage="script")
         scripts = (writer or Scriptwriter()).write(topic, count=count,
                                                    style=style, extra=extra)
+        result = ScriptJobResult(ref=ref, topic=topic,
+                                 style=style or styles.get(style).name,
+                                 scripts=scripts).as_dict()
+        # Scripts and the finished state land together or not at all; see
+        # `ContentStore.complete_scripts`.
+        db.complete_scripts(ref, scripts, result)
+        return result
     except Exception as exc:
-        db.fail_job(ref, f"{type(exc).__name__}: {exc}", stage="script")
+        # Recording the failure must not replace it. If the database is what
+        # broke, `fail_job` breaks too, and the caller needs the original
+        # exception rather than a second one about writing it down. The row is
+        # left running in that case, which the start-up recovery pass closes.
+        with contextlib.suppress(Exception):
+            db.fail_job(ref, f"{type(exc).__name__}: {exc}", stage="script")
         raise
-
-    for script in scripts:
-        db.add_asset(ref, kind="script", body=script.as_dict(),
-                     meta={"hook": script.hook,
-                           "seconds": script.estimated_seconds()})
-
-    result = ScriptJobResult(ref=ref, topic=topic,
-                             style=style or styles.get(style).name,
-                             scripts=scripts)
-    db.finish_job(ref, result=result.as_dict(), stage="script")
-    return result.as_dict()
 
 
 def _script_job(ref: str, topic: str, count: int, style: str, extra: str,
@@ -341,8 +363,24 @@ def queue_scripts(topic: str, count: int = 3, style: str = "", extra: str = "",
 
     The error path below does touch the database, which is fine: nobody is
     waiting on a fast answer to a job that is not going to run.
+
+    The permission check does read the settings file, which is a small JSON
+    read rather than a row behind SQLite's write lock - microseconds, and with
+    no lock to queue behind. That is the whole reason the rule is about the
+    *database* and not about I/O in general.
     """
+    import permissions
     import workers
+
+    # Checked here as well as by whoever called, because this is the one place
+    # every caller passes through. Removing the tool from the model's list
+    # stops the voice asking; it does nothing about a routine, the dashboard,
+    # a retry, or a tool handed to a conversation that was already open when
+    # the switch was turned off. A capability is only off if the work refuses
+    # to start, and this is where the work starts.
+    if not permissions.allowed("content"):
+        raise PermissionError(
+            "the content engine is switched off in your permissions")
 
     ref = new_ref()
     queued = workers.host().submit(

@@ -36,10 +36,16 @@ class TestTheSwitches:
     def test_power_is_off_until_you_ask(self) -> None:
         assert permissions.BY_KEY["power"].default is False
 
-    def test_an_unknown_key_is_permitted(self) -> None:
-        """A capability this build doesn't know about must not silently
-        disable a tool."""
-        assert permissions.allowed("not-a-capability", FakeSettings())
+    def test_an_unknown_key_is_refused(self) -> None:
+        """A capability this build doesn't know about is not a capability.
+
+        This asserted the opposite until the September 2026 re-audit, on the
+        reasoning that switches govern known tools and an unknown name is not
+        one of them. But the ways an unknown name actually arrives are a
+        renamed key, a typo in a caller, and a tool added to the registry and
+        forgotten here - and every one of those granted itself permission.
+        """
+        assert permissions.allowed("not-a-capability", FakeSettings()) is False
 
 
 class TestEnforcement:
@@ -73,16 +79,47 @@ class TestEnforcement:
         tools = self.tools()
         assert permissions.filter_tools(tools, settings) == tools
 
-    def test_broken_settings_fall_back_to_the_defaults(self) -> None:
-        """A settings file that cannot be read must not hand out every
-        capability, nor take them all away."""
+    def test_settings_that_cannot_be_read_permit_nothing(self) -> None:
+        """A policy you cannot read is not a policy that permits things.
+
+        This used to fall back to each capability's shipped default, which
+        meant a corrupt settings file re-enabled every capability that ships
+        switched on - and a settings file is most often corrupted by being
+        hand-edited, which is usually somebody switching something off.
+        """
 
         class Exploding:
             def get(self, key, default=None):
                 raise RuntimeError("nope")
 
-        assert permissions.allowed("browse", Exploding()) is True
+        assert permissions.allowed("browse", Exploding()) is False
         assert permissions.allowed("power", Exploding()) is False
+
+    def test_a_settings_file_that_had_to_be_replaced_permits_nothing(self) -> None:
+        """Defaults standing in for a damaged file are not the owner's policy."""
+        from jarvis.config import Settings
+
+        replaced = Settings({"permissions": {"browse": True}}, unreadable=True)
+        assert permissions.allowed("browse", replaced) is False
+
+    def test_the_string_false_is_not_true(self) -> None:
+        """`bool("false")` is True, and a hand-edited settings file is exactly
+        where the string "false" comes from."""
+        assert permissions.allowed("browse", FakeSettings(
+            {"permissions.browse": "false"})) is False
+        assert permissions.allowed("browse", FakeSettings(
+            {"permissions.browse": "true"})) is False
+        assert permissions.allowed("browse", FakeSettings(
+            {"permissions.browse": 1})) is False
+        assert permissions.allowed("browse", FakeSettings(
+            {"permissions.browse": True})) is True
+
+    def test_an_untouched_capability_keeps_its_shipped_default(self) -> None:
+        """Strictness is about stored values, not about absent ones. On a
+        machine where nothing has been switched off there is nothing to
+        honour but the default."""
+        assert permissions.allowed("browse", FakeSettings()) is True
+        assert permissions.allowed("power", FakeSettings()) is False
 
 
 class TestWhatTheModelIsTold:

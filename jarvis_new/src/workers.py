@@ -39,6 +39,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+import latch
+
 #: How long `stop()` waits for the loop to drain before giving up on it. A
 #: render that ignores cancellation must not hold the whole process open.
 SHUTDOWN_SECONDS = 5.0
@@ -55,6 +57,18 @@ FINAL = ("done", "failed", "cancelled")
 #: the longest that wait may grow to as it doubles.
 RETRY_BACKOFF = 2.0
 RETRY_CEILING = 30.0
+
+
+def _is_refusal(exc: BaseException) -> bool:
+    """Is this a "you are not allowed to" rather than a "that went wrong"?
+
+    A retry is for something that might work next time: a rate limit, a 503,
+    a connection that dropped. A permission that is switched off is not that.
+    Retrying it burns the backoff, prints two alarming lines about a job
+    "failing", and ends in the same refusal - so the job goes straight to its
+    final state with the reason attached.
+    """
+    return isinstance(exc, (PermissionError, latch.ExecutionDisabledError))
 
 
 async def _guard(coro: Any, label: str) -> None:
@@ -265,7 +279,14 @@ class WorkerHost:
         a retry is only ever right for work that is safe to run twice, and
         the caller is the only one who knows whether it is. Cancelling is
         never retried, and neither is a job the host is shutting down under.
+
+        Raises `ExecutionDisabled` when the stop latch is engaged, before
+        anything is queued and before the host would be started. The lazy
+        start below is why that check has to be here rather than in whoever
+        called: submitting used to *restart a killed host*, so pressing the
+        dashboard's kill switch and then asking for a script ran the script.
         """
+        latch.guard("submit a background job")
         if not self.running and not self.start():
             return None
         loop, queue = self._loop, self._queue
@@ -307,7 +328,12 @@ class WorkerHost:
         weak reference to a running task, and one that is garbage collected
         mid-flight simply stops, silently, which for a scheduler means every
         routine quietly never firing again.
+
+        Refuses while the stop latch is engaged, for the same reason `submit`
+        does: this starts the host too, and the routine ticker is exactly the
+        thing a kill switch is pressed to stop.
         """
+        latch.guard("start a background daemon")
         if not self.running and not self.start():
             return None
         loop = self._loop
@@ -386,6 +412,16 @@ class WorkerHost:
             self._set(job, status="cancelled", finished_at=time.time())
             return
 
+        if latch.engaged():
+            # The switch was pressed while this waited its turn. Checking at
+            # submission is not enough on its own: the gap between accepting a
+            # job and running it is exactly where a kill lands, and a queue
+            # that drains itself after the stop button is a stop button that
+            # does not stop anything.
+            self._set(job, status="cancelled", finished_at=time.time(),
+                      error="JARVIS was stopped before this job ran")
+            return
+
         self._set(job, status="running", started_at=time.time())
         delay = backoff
 
@@ -421,7 +457,9 @@ class WorkerHost:
                 raise
             except Exception as exc:
                 reason = f"{type(exc).__name__}: {exc}"
-                more = job.attempts < job.max_attempts and not job.cancel_requested
+                more = (job.attempts < job.max_attempts
+                        and not job.cancel_requested
+                        and not _is_refusal(exc))
                 if more:
                     print(f"  [worker] {job.name} failed on attempt "
                           f"{job.attempts} of {job.max_attempts} ({reason}); "

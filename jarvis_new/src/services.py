@@ -53,10 +53,17 @@ import threading
 import time
 from typing import Any
 
+import latch
+
 #: Not started, or deliberately stopped. The dashboard draws this as "off".
 STATE_STOPPED = "stopped"
 #: Running normally.
 STATE_RUNNING = "running"
+#: Running, but something did not come up. Separated from `STATE_RUNNING`
+#: because `start()` used to write "running" whatever happened - a machine
+#: whose scheduler failed to arm reported itself healthy, and the only sign
+#: was a line of text in an error field nothing drew.
+STATE_DEGRADED = "degraded"
 #: Stopped by the kill switch rather than by shutting down. Distinguished from
 #: `STATE_STOPPED` because it is the one state somebody chose, and a dashboard
 #: that cannot tell "never started" from "you stopped this" will eventually
@@ -72,6 +79,16 @@ STOP_TIMEOUT = 10.0
 #: on purpose: it is there so a cancelled job gets to run its own cleanup, not
 #: so a blocking job gets to finish.
 SETTLE_TIMEOUT = 2.0
+
+#: One lane for every lifecycle transition. `start`, `stop`, `kill` and
+#: `restart` are all reachable from HTTP handlers, which means concurrently:
+#: `start()` used to check the state under `_lock`, release it for the several
+#: seconds start-up takes, and write "running" at the end - so a kill that
+#: arrived in the middle was overwritten by a start that had already been
+#: overtaken. This is held for the whole of a transition, and `_lock` is kept
+#: for the short reads that `state()` does so the dashboard never waits behind
+#: a start.
+_transition = threading.RLock()
 
 _lock = threading.RLock()
 _state = STATE_STOPPED
@@ -107,10 +124,21 @@ def state() -> dict[str, Any]:
     with _lock:
         current, since, owner, error = _state, _started_at, _owner, _last_error
 
+    # The latch, not this process's memory, is what "killed" means. A fresh
+    # process that has never called `kill()` still reports killed if the
+    # previous one did, which is the whole point of the latch.
+    stop_latch = latch.state()
+    disabled = bool(stop_latch.get("disabled"))
+    if disabled and current in (STATE_STOPPED, STATE_KILLED):
+        current = STATE_KILLED
+
     payload: dict[str, Any] = {
         "state": current,
-        "running": current == STATE_RUNNING,
-        "killed": current == STATE_KILLED,
+        "running": current in (STATE_RUNNING, STATE_DEGRADED),
+        "degraded": current == STATE_DEGRADED,
+        "killed": current == STATE_KILLED or disabled,
+        "execution_disabled": disabled,
+        "latch": stop_latch,
         "owner": owner,
         "this_process": owner_tag(),
         "owns_services": owner == owner_tag(),
@@ -147,7 +175,7 @@ def state() -> dict[str, Any]:
 
 def running() -> bool:
     with _lock:
-        return _state == STATE_RUNNING
+        return _state in (STATE_RUNNING, STATE_DEGRADED)
 
 
 def start(reason: str = "process start") -> dict[str, Any]:
@@ -161,59 +189,99 @@ def start(reason: str = "process start") -> dict[str, Any]:
     whose scheduler will not arm should still answer the door and still talk;
     it should say loudly that it is not scheduling anything, which is what the
     error in `state()` is for.
+
+    Refuses outright while the stop latch is engaged. That is what makes the
+    kill switch survive a restart: the launcher calls this on every start, and
+    a latch nobody cleared means it declines and says so.
     """
     global _state, _started_at, _owner, _last_error
 
-    with _lock:
-        if _state == STATE_RUNNING:
+    with _transition:
+        if latch.engaged():
+            with _lock:
+                _state = STATE_KILLED
+                _started_at = None
+                _owner = ""
+                _last_error = ("execution is disabled; start the services "
+                               "again from the dashboard")
+            print("  Background services stay off: JARVIS was stopped, and "
+                  "that outlasts closing the window. Start them again from "
+                  "the dashboard.")
             return state()
-        _last_error = ""
 
-    print(f"  Starting background services ({reason}).")
-    problems: list[str] = []
+        with _lock:
+            if _state in (STATE_RUNNING, STATE_DEGRADED):
+                return state()
+            _last_error = ""
 
-    try:
-        import workers
+        # The generation this start belongs to. A kill arriving while start-up
+        # is still running bumps it, and the check before publishing "running"
+        # below sees that this start has been overtaken and stands down rather
+        # than writing itself over the kill.
+        began_at_generation = latch.generation()
 
-        if not workers.host().start():
-            problems.append("the worker host did not come up")
-    except Exception as exc:
-        problems.append(f"workers: {type(exc).__name__}: {exc}")
+        print(f"  Starting background services ({reason}).")
+        problems: list[str] = []
 
-    # Anything left mid-flight by a process that died. On a worker rather than
-    # here: it is several SQLite reads, and start-up is not the place to spend
-    # them. Submitted before the ticker so a recovered job is already visible
-    # by the time the first tick looks.
-    try:
-        import workers
-        from content.pipeline import recover_interrupted
+        try:
+            import workers
 
-        workers.host().submit(recover_interrupted,
-                              name="recover interrupted jobs")
-    except Exception as exc:
-        problems.append(f"recovery: {type(exc).__name__}: {exc}")
+            if not workers.host().start():
+                problems.append("the worker host did not come up")
+        except Exception as exc:
+            problems.append(f"workers: {type(exc).__name__}: {exc}")
 
-    try:
-        import routines
+        # Anything left mid-flight by a process that died. On a worker rather
+        # than here: it is several SQLite reads, and start-up is not the place
+        # to spend them. Submitted before the ticker so a recovered job is
+        # already visible by the time the first tick looks.
+        try:
+            import workers
+            from content.pipeline import recover_interrupted
 
-        if not routines.start_routines():
-            problems.append("the routine ticker did not start")
-    except Exception as exc:
-        problems.append(f"routines: {type(exc).__name__}: {exc}")
+            workers.host().submit(recover_interrupted,
+                                  name="recover interrupted jobs")
+        except Exception as exc:
+            problems.append(f"recovery: {type(exc).__name__}: {exc}")
 
-    _install_shutdown_hooks()
+        try:
+            import routines
 
-    with _lock:
-        _state = STATE_RUNNING
-        _started_at = time.time()
-        _owner = owner_tag()
-        _last_error = "; ".join(problems)
+            if not routines.start_routines():
+                problems.append("the routine ticker did not start")
+        except Exception as exc:
+            problems.append(f"routines: {type(exc).__name__}: {exc}")
 
-    if problems:
-        print(f"  Background services started with problems: {_last_error}")
-    else:
-        print("  Background services running: workers and routines.")
-    return state()
+        _install_shutdown_hooks()
+
+        if latch.engaged() or latch.generation() != began_at_generation:
+            # Overtaken. Undo the partial start rather than reporting a
+            # machine that is running after somebody stopped it.
+            print("  Background services were stopped while starting; "
+                  "standing down.")
+            _tear_down()
+            with _lock:
+                _state = STATE_KILLED
+                _started_at = None
+                _owner = ""
+                _last_error = "stopped while starting"
+            return state()
+
+        with _lock:
+            # "Running" now means running. A start where the worker host or
+            # the ticker failed reports degraded, because a scheduler that
+            # never armed and a scheduler that is working look identical from
+            # a green dot, and the difference is every routine never firing.
+            _state = STATE_DEGRADED if problems else STATE_RUNNING
+            _started_at = time.time()
+            _owner = owner_tag()
+            _last_error = "; ".join(problems)
+
+        if problems:
+            print(f"  Background services started with problems: {_last_error}")
+        else:
+            print("  Background services running: workers and routines.")
+        return state()
 
 
 def stop(timeout: float = STOP_TIMEOUT, killed: bool = False,
@@ -231,19 +299,48 @@ def stop(timeout: float = STOP_TIMEOUT, killed: bool = False,
     from every caller's point of view, no further job starts, and an FFmpeg
     render or a paid API call already in flight finishes on its own. `state()`
     reports what is still winding down rather than claiming an empty machine.
+
+    Order matters here and is deliberate: when this is a kill, the latch is
+    committed **before** anything is stopped. A stop that fails halfway then
+    still leaves a machine that refuses new work, whereas stopping first and
+    recording it afterwards leaves a window - and a crash in that window - in
+    which everything is down and nothing says it should stay down.
     """
     global _state, _started_at, _owner
 
-    with _lock:
-        was = _state
-    if was != STATE_RUNNING:
+    with _transition:
+        if killed:
+            latch.engage(reason=reason)
+
         with _lock:
-            if killed:
-                _state = STATE_KILLED
-        return state()
+            was = _state
+        if was not in (STATE_RUNNING, STATE_DEGRADED):
+            with _lock:
+                if killed:
+                    _state = STATE_KILLED
+                    _started_at = None
+                    _owner = ""
+            return state()
 
-    print(f"  Stopping background services ({reason}).")
+        print(f"  Stopping background services ({reason}).")
+        cancelled = _tear_down(timeout=timeout)
 
+        with _lock:
+            _state = STATE_KILLED if killed else STATE_STOPPED
+            _started_at = None
+            _owner = ""
+
+        print(f"  Background services stopped; {cancelled} job(s) cancelled.")
+        result = state()
+        result["cancelled"] = cancelled
+        return result
+
+
+def _tear_down(timeout: float = STOP_TIMEOUT) -> int:
+    """Stop the ticker and the host. Returns how many jobs were cancelled.
+
+    Never raises: every caller is already shutting something down.
+    """
     cancelled = 0
     try:
         import routines
@@ -258,7 +355,7 @@ def stop(timeout: float = STOP_TIMEOUT, killed: bool = False,
         host = workers.host()
         # Cancel before stopping, so a job that *can* be stopped is, rather
         # than being left to the shutdown timeout. `cancel` is best effort by
-        # design; see the docstring above.
+        # design; see `stop`'s docstring.
         for job in host.status().get("jobs", []):
             ref = str(job.get("ref") or "")
             if ref and job.get("status") in ("queued", "running"):
@@ -283,24 +380,16 @@ def stop(timeout: float = STOP_TIMEOUT, killed: bool = False,
         host.stop(timeout=timeout)
     except Exception as exc:
         print(f"  [services] the worker host did not stop cleanly: {exc}")
-
-    with _lock:
-        _state = STATE_KILLED if killed else STATE_STOPPED
-        _started_at = None
-        _owner = ""
-
-    print(f"  Background services stopped; {cancelled} job(s) cancelled.")
-    result = state()
-    result["cancelled"] = cancelled
-    return result
+    return cancelled
 
 
 def kill(reason: str = "kill switch") -> dict[str, Any]:
     """The dashboard's master stop.
 
-    The same shutdown the process does on its way out, with the end state
-    marked as chosen rather than incidental, so that nothing starts the
-    services again on the assumption they had simply never run.
+    Writes the latch first and then shuts down, so that nothing starts the
+    services again - not a submitted job, not a routine, not the next launch
+    of the program. Clearing it is `restart()`, which is reachable only from
+    the dashboard.
     """
     result = stop(killed=True, reason=reason)
     result["killed"] = True
@@ -308,14 +397,20 @@ def kill(reason: str = "kill switch") -> dict[str, Any]:
 
 
 def restart(reason: str = "restart requested") -> dict[str, Any]:
-    """Undo a kill.
+    """Undo a kill. The one thing that clears the latch.
 
     A stop button with no way back is not a control, it is a trap: the only
     remedy would be closing the window and running the launcher again, and
     somebody will press it to see what it does.
+
+    Releasing the latch is deliberately *here* and not inside `start()`.
+    Start runs on every launch; if it cleared the latch, closing the window
+    would undo the kill switch, which is the exact bug this replaces.
     """
-    stop(reason=reason)
-    return start(reason=reason)
+    with _transition:
+        stop(reason=reason)
+        latch.release(reason=reason)
+        return start(reason=reason)
 
 
 def _install_shutdown_hooks() -> None:
@@ -377,3 +472,4 @@ def reset_for_tests() -> None:
         _started_at = None
         _owner = ""
         _last_error = ""
+    latch.reset_for_tests()

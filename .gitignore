@@ -1,3 +1,12 @@
+# Keys, anywhere. `jarvis_new/` and `jarvis_new/frontend/` each had this rule
+# and the root did not, so a setup command run from the repository root wrote
+# a key file that git then offered to commit. `.env.example` files are the
+# blank templates and are meant to be tracked.
+.env
+.env.*
+!.env.example
+!*/.env.example
+
 __pycache__/
 *.py[cod]
 .venv/

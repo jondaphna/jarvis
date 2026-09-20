@@ -124,8 +124,17 @@ class Grant:
             return False
         if not any(_cap_match(pattern, capability) for pattern in self.capabilities):
             return False
-        if resource is not None and self.resources != ("*",):
-            target = str(resource).lower()
+        if self.resources != ("*",):
+            # A scoped grant needs a target to scope. It used to skip this
+            # check entirely when the caller named no resource, so a grant
+            # that said "send to alice, and only alice" covered a send with
+            # no recipient at all - the one request it could not possibly
+            # have been meant to authorise. Same reasoning as the amount cap
+            # below: a limit that only applies when the request bothers to
+            # mention the thing being limited is not a limit.
+            if not isinstance(resource, str) or not resource.strip():
+                return False
+            target = resource.lower()
             if not any(fnmatch(target, pattern.lower()) for pattern in self.resources):
                 return False
         if self.max_amount_usd is not None:
