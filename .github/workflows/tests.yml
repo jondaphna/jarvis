@@ -1,0 +1,49 @@
+# Moved here from jarvis_new/.github/workflows/ on 20 September 2026. GitHub only
+# reads workflows from the repository root, so while this lived one level down it
+# had never run - the repo had 28 test files and zero check runs.
+name: Tests
+
+# Every branch, not just main. All the code is on a feature branch
+# (claude/personal-ai-assistant-hihz78); main holds an 8-byte README, so a
+# main-only filter would mean these still never run.
+on:
+  push:
+  pull_request:
+
+jobs:
+  jarvis-new:
+    name: jarvis_new (voice agent)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # The project is a level down. Without this, uv reads the root
+        # pyproject.toml and installs the wrong dependency set.
+        working-directory: jarvis_new
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v1
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          # pyproject pins >=3.10,<3.15. 3.12 rather than the template's 3.14
+          # because it is the version the project is actually developed against.
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: UV_GIT_LFS=1 uv sync --dev
+
+      - name: Run tests
+        env:
+          LIVEKIT_URL: ${{ secrets.LIVEKIT_URL }}
+          LIVEKIT_API_KEY: ${{ secrets.LIVEKIT_API_KEY }}
+          LIVEKIT_API_SECRET: ${{ secrets.LIVEKIT_API_SECRET }}
+        # The handful of tests that need a real LiveKit key skip themselves when
+        # one is not configured, so this is green without secrets and stronger
+        # with them.
+        run: uv run pytest -v

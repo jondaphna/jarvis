@@ -1,9 +1,23 @@
+import os
 import textwrap
 
 import pytest
 from livekit.agents import AgentSession, inference, llm
 
 from agent import Assistant
+
+#: These need a real LiveKit key: the session talks to LiveKit's inference
+#: endpoint. Skipped rather than failed when there is no key, so that a run
+#: without credentials reports "nothing to check here" instead of red - the
+#: distinction CI depends on to mean anything.
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.skipif(
+        not os.environ.get("LIVEKIT_API_KEY"),
+        reason="needs LIVEKIT_API_KEY; these call a live model",
+    ),
+]
+
 
 
 def _judge_llm() -> llm.LLM:

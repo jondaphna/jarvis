@@ -1,10 +1,15 @@
+# Moved here from jarvis_new/.github/workflows/ on 20 September 2026.
+#
+# This one keeps its main-only filter, unlike the other three. It pushes a
+# release tag, and tagging a release off a feature branch would put permanent
+# version tags on work that has not landed yet.
 name: Tag livekit-agents version
 
 on:
   push:
     branches: [main]
     paths:
-      - 'pyproject.toml'
+      - 'jarvis_new/pyproject.toml'
 
 permissions:
   contents: write
@@ -26,7 +31,7 @@ jobs:
 
         extract_version() {
           local ref="$1"
-          git show "$ref:pyproject.toml" 2>/dev/null \
+          git show "$ref:jarvis_new/pyproject.toml" 2>/dev/null \
             | grep -oE '"livekit-agents(\[[^]]*\])?==[^"]+"' \
             | head -n1 \
             | sed -E 's/.*==([^"]+)"/\1/' \
