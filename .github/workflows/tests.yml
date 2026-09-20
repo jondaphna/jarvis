@@ -54,3 +54,38 @@ jobs:
         # one is not configured, so this is green without secrets and stronger
         # with them.
         run: uv run pytest -v
+
+  dashboard:
+    name: dashboard (Next.js)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: jarvis_new/frontend
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v4
+        with:
+          # The version in package.json's `packageManager`, so CI resolves the
+          # lockfile the same way a machine here does.
+          version: 9.15.9
+
+      - uses: actions/setup-node@v4
+        with:
+          # package.json asks for 24.x.
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: jarvis_new/frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm exec tsc --noEmit
+
+      # The owner-authentication tests (F01). They exercise the real route
+      # handlers, so a change that quietly stops checking the caller fails
+      # here rather than in someone's browser.
+      - name: Run tests
+        run: pnpm test

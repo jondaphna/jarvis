@@ -1,8 +1,10 @@
 import { Public_Sans } from 'next/font/google';
 import localFont from 'next/font/local';
 import { headers } from 'next/headers';
+import { SignIn } from '@/components/app/sign-in';
 import { ThemeProvider } from '@/components/app/theme-provider';
 import { ThemeToggle } from '@/components/app/theme-toggle';
+import { ownerSignedIn } from '@/lib/session';
 import { cn } from '@/lib/shadcn/utils';
 import { getAppConfig, getStyles } from '@/lib/utils';
 import '@/styles/globals.css';
@@ -47,6 +49,9 @@ export default async function RootLayout({ children }: RootLayoutProps) {
   const hdrs = await headers();
   const appConfig = await getAppConfig(hdrs);
   const styles = getStyles(appConfig);
+  // Every page goes through this layout, so this is the one gate. A page
+  // added next month is behind it without anyone remembering to put it there.
+  const signedIn = await ownerSignedIn();
   const { pageTitle, pageDescription, companyName, logo, logoDark } = appConfig;
 
   return (
@@ -89,7 +94,7 @@ export default async function RootLayout({ children }: RootLayoutProps) {
             </a>
           </header>
 
-          {children}
+          {signedIn ? children : <SignIn />}
           <div className="group fixed bottom-0 left-1/2 z-50 mb-2 -translate-x-1/2">
             <ThemeToggle className="translate-y-20 transition-transform delay-150 duration-300 group-hover:translate-y-0" />
           </div>

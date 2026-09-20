@@ -17,8 +17,14 @@ REM nothing, with no clue why. Starting twice is harmless; the second one
 REM sees the port taken and steps aside.
 start "Jarvis control" /min uv run --project "%~dp0jarvis_new" python "%~dp0jarvis_new\src\control_api.py"
 
+REM Make the dashboard key exist before the browser can ask for it. The
+REM server would create it on first request anyway; doing it here means
+REM butler-settings.bat can read it without racing that first request.
+node "%~dp0jarvis_new\frontend\scripts\dashboard-key.mjs" --key >nul 2>nul
+
 echo.
 echo   Web page starting on http://localhost:3000
+echo   It opens signed in from butler-settings.bat or the orb.
 echo   Ctrl-C to stop.
 echo.
 npm run dev

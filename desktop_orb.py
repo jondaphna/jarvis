@@ -27,6 +27,7 @@ import threading
 import urllib.request
 import webbrowser
 from pathlib import Path
+from urllib.parse import quote
 
 from PyQt6.QtCore import QPoint, Qt, QTimer
 from PyQt6.QtGui import QAction, QColor, QCursor, QPainter, QPen
@@ -36,6 +37,29 @@ from chrome_finder import find_chrome, preferred_profile
 
 HERE = Path(__file__).resolve().parent
 WEB_URL = "http://localhost:3000"
+
+
+def signed_url(path: str = "/") -> str:
+    """The dashboard's address with the key that signs this browser in.
+
+    The console asks who you are now. The key lives beside the control token
+    in the JARVIS folder, and the page strips it out of the address bar the
+    moment it has used it.
+
+    If the file isn't there yet - first run, before the web app has ever
+    started - the plain address is returned and you get the sign-in screen,
+    which is the right answer rather than an error.
+    """
+    try:
+        from jarvis import paths
+
+        secret = (paths.ROOT / "dashboard.secret").read_text("utf-8").strip()
+    except (OSError, ImportError, UnicodeDecodeError):
+        secret = ""
+    if not secret:
+        return f"{WEB_URL}{path}"
+    joiner = "&" if "?" in path else "?"
+    return f"{WEB_URL}{path}{joiner}key={quote(secret, safe='')}"
 
 DIAMETER = 86
 MARGIN = 10                      # room for the glow, so it isn't clipped
@@ -374,9 +398,9 @@ class Orb(QWidget):
         """
         if not self._online:
             self.start_everything()
-            QTimer.singleShot(2500, lambda: webbrowser.open(f"{WEB_URL}/settings"))
+            QTimer.singleShot(2500, lambda: webbrowser.open(signed_url("/settings")))
             return
-        webbrowser.open(f"{WEB_URL}/settings")
+        webbrowser.open(signed_url("/settings"))
 
     def open_jarvis(self) -> None:
         """Start whatever isn't running, then open the window and connect."""
@@ -417,7 +441,11 @@ class Orb(QWidget):
         already had open, and autostart tells the page to connect by itself so
         you can just talk.
         """
-        url = f"{WEB_URL}/?autostart=1"
+        # The key rides on the command line here. On this machine that is the
+        # same exposure as the file it came from - both are readable by this
+        # account and nobody else - and it is the only way to hand a freshly
+        # launched browser a credential.
+        url = signed_url("/?autostart=1")
         chrome = find_chrome()
         if chrome:
             try:

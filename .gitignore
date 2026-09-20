@@ -27,3 +27,8 @@ Thumbs.db
 # so it can never be committed again and collide with the one on your machine.
 uv.lock
 !jarvis_new/uv.lock
+
+# Credentials that live in the JARVIS folder. They belong in %APPDATA%\JARVIS
+# and not in a checkout, but JARVIS_HOME can point anywhere, so say it here.
+control.token
+dashboard.secret

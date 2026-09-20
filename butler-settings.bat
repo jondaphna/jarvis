@@ -12,7 +12,11 @@ REM your spoken commands.
 setlocal
 cd /d "%~dp0"
 
+REM The key that signs this browser in. Without it the console opens on a
+REM sign-in screen, which is correct but is not what you asked for. The script
+REM creates the key on first run, so this works the very first time too.
 set "URL=http://localhost:3000/settings"
+for /f "usebackq delims=" %%K in (`node "%~dp0jarvis_new\frontend\scripts\dashboard-key.mjs" --path /settings 2^>nul`) do set "URL=%%K"
 
 REM If the web app isn't up there is nothing to open, so start it first.
 powershell -NoProfile -Command "try{(New-Object Net.Sockets.TcpClient).Connect('127.0.0.1',3000);exit 0}catch{exit 1}" >nul 2>nul
@@ -27,6 +31,6 @@ if errorlevel 1 (
 
 start "" "%URL%"
 echo.
-echo   Settings opened: %URL%
+echo   Settings opened: http://localhost:3000/settings
 echo.
 exit /b 0

@@ -593,6 +593,19 @@ def check_services() -> None:
     except Exception:
         print(WARN + "web app is not running (start butler-web.bat)")
 
+    # The console asks who you are now. Without this file the launchers cannot
+    # sign the browser in, and you get a key prompt instead of the dashboard.
+    secret = paths.ROOT / "dashboard.secret"
+    try:
+        key = secret.read_text("utf-8").strip()
+    except OSError:
+        key = ""
+    if key:
+        print(OK + "dashboard key is set, so the console opens signed in")
+    else:
+        print(WARN + "no dashboard key yet - the console will ask for one "
+                     "(butler-web.bat creates it)")
+
 
 def main() -> int:
     print("\n  Jarvis - checking everything\n" + "  " + "-" * 44)
