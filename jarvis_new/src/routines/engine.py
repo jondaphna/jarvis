@@ -40,6 +40,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from . import actions
 from .cron import ScheduleError, parse
 from .store import (
+    SEEDED_KEY,
     STATUS_DONE,
     STATUS_FAILED,
     STATUS_SKIPPED,
@@ -211,14 +212,31 @@ class RoutineEngine:
         return True
 
     def seed_defaults(self, force: bool = False) -> int:
-        """Put the starting routines in, once, on a fresh database."""
-        if not force and self.store.all():
-            return 0
+        """Put the starting routines in, once, on a fresh database.
+
+        "Once" is recorded in the database rather than inferred from the table
+        being empty. An empty table is not the same as a new one: somebody who
+        deletes every routine means it, and the old check brought the defaults
+        straight back on the next start.
+        """
+        if not force:
+            try:
+                if self.store.flag(SEEDED_KEY) or self.store.all():
+                    # Marked here too, so an install that already has routines
+                    # from before this flag existed does not seed on the day
+                    # its last routine is deleted.
+                    with contextlib.suppress(Exception):
+                        self.store.set_flag(SEEDED_KEY)
+                    return 0
+            except Exception:
+                return 0
         added = 0
         for payload in DEFAULTS:
             with contextlib.suppress(Exception):
                 self.save(dict(payload))
                 added += 1
+        with contextlib.suppress(Exception):
+            self.store.set_flag(SEEDED_KEY)
         return added
 
     # ------------------------------------------------------------------ #
@@ -251,7 +269,11 @@ class RoutineEngine:
 
         due = to_dt(due_at)
         late = (now - due).total_seconds() if due else 0.0
-        grace = int(routine.get("grace_seconds") or DEFAULT_GRACE)
+        # `is None`, not truthiness: a grace of 0 means "if you missed it,
+        # skip it", and `or DEFAULT_GRACE` turned that into an hour - the
+        # opposite instruction.
+        raw_grace = routine.get("grace_seconds")
+        grace = DEFAULT_GRACE if raw_grace is None else max(0, int(raw_grace))
         if late > grace and not routine.get("catch_up"):
             run_id = self.store.start_run(routine_id, trigger="schedule",
                                           due_at=due_at)

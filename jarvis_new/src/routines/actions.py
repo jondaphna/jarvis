@@ -202,6 +202,19 @@ def action_content_scripts(routine: dict[str, Any], store: Any = None) -> str:
     topic = str(routine.get("instruction") or "").strip()
     if not topic:
         return "This routine has no topic to write about."
+
+    # The content switch is checked here as well as at the tool list. Turning a
+    # capability off removes its *tools*, which is the whole story for anything
+    # the model asks for - but a standing routine is not the model asking, and
+    # a routine saved while the engine was on would otherwise carry on queueing
+    # work after it was switched off, with nothing in the interface to say so.
+    import permissions
+
+    if not permissions.allowed("content"):
+        return ("The content engine is switched off, so I didn't write "
+                "anything. Turn it on in the permissions tab if you want "
+                "this routine to run.")
+
     try:
         from content.pipeline import queue_scripts
 
