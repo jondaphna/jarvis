@@ -52,6 +52,13 @@ BUDGET_MS = 20.0
 #: 10-20ms, so lag past this is where a listener starts to hear it.
 LOOP_LAG_MS = 20.0
 
+#: How long to allow a routine to actually fire, in the one test that needs it
+#: to. This is a precondition rather than a budget: nothing is being measured
+#: against it, so it is set to "long enough on the slowest machine we run on"
+#: instead of "the number we want". The loose version of this was the single
+#: flakiest test in the suite.
+FIRING_DEADLINE = 180.0
+
 SCRIPT = {
     "hook": "A hook that earns the next two seconds.",
     "beats": [
@@ -455,12 +462,27 @@ class TestTheRoutineTickerCostsTheVoiceNothing:
             # reach a worker. What is asserted is that it really ran - a
             # measurement taken beside a routine that never fired would prove
             # nothing at all.
-            deadline = time.time() + 30
+            #
+            # The deadline is generous because it is not what this test is
+            # about. 240 rounds of synthetic load queue ahead of the routine on
+            # a host that runs one job at a time, so on a small shared CI
+            # machine draining that backlog is minutes rather than seconds. A
+            # tight deadline here fails the test for being slow, which is not
+            # the property under test - the latency assertions below are - and
+            # it reads as a regression in the voice path when it is nothing of
+            # the kind.
+            deadline = time.time() + FIRING_DEADLINE
+            row = engine.store.get(saved["id"])
             while time.time() < deadline:
-                if engine.store.get(saved["id"])["runs"] >= 1:
+                row = engine.store.get(saved["id"])
+                if row["runs"] >= 1 and row["last_output"]:
                     break
                 time.sleep(0.05)
-            assert engine.store.get(saved["id"])["last_output"] == "good morning"
+            assert row["last_output"] == "good morning", (
+                f"the routine never fired within {FIRING_DEADLINE:.0f}s, so "
+                f"these measurements were taken beside an idle ticker "
+                f"(runs={row['runs']}, status={row['last_status']!r}, "
+                f"error={row['last_error']!r})")
         finally:
             engine.stop()
         tools = summarise(latencies, "status tool while a routine fires")
