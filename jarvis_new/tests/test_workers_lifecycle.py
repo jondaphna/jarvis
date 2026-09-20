@@ -230,7 +230,13 @@ class TestTheHistoryStaysBounded:
         made.start()
         let_go = threading.Event()
         try:
-            made.submit(lambda: let_go.wait(timeout=30.0), name="blocker")
+            blocker = made.submit(lambda: let_go.wait(timeout=30.0),
+                                  name="blocker")
+            # Wait for it to actually occupy the worker, as the test above
+            # does. Without this the count below is a race: on a loaded
+            # machine the blocker can still be queued itself when `status()`
+            # is read, and the backlog comes back one too many.
+            assert wait_for(lambda: made.job(blocker).status == "running")
             waiting = [made.submit(lambda: None, name=f"waiting-{i}")
                        for i in range(workers.HISTORY + 10)]
             state = made.status()
