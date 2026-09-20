@@ -19,6 +19,7 @@ panel is converted back to their own time on the way out.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import sys
@@ -80,7 +81,18 @@ CREATE INDEX IF NOT EXISTS idx_routine_runs_routine
     ON routine_runs(routine_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_routine_runs_undelivered
     ON routine_runs(delivered, id DESC);
+
+CREATE TABLE IF NOT EXISTS routine_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+);
 """
+
+#: Set once the starting routines have been written. Seeding used to ask "is
+#: the table empty?", which is a different question: deleting every routine
+#: made it true again and the defaults came back on the next start. Deleting
+#: them all is a thing a person can mean.
+SEEDED_KEY = "defaults_seeded"
 
 STATUS_RUNNING = "running"
 STATUS_DONE = "done"
@@ -128,12 +140,31 @@ def slug(text: str) -> str:
     ASCII only, because the id is a path segment in the settings API - and a
     routine called "Ünïcode" whose id needs percent-encoding to delete is a
     routine that cannot be deleted from a page that forgot to encode it.
+
+    Where the ASCII form cannot tell two names apart, a digest of the real name
+    is appended so that it can. Without it every all-Hebrew name produced the
+    same id - the literal fallback "routine" - and saving a second Hebrew
+    routine silently overwrote the first. Names that survive as ASCII intact,
+    which is every default and every English name, keep the id they always had,
+    so nothing on disk needs migrating.
     """
+    name = text or ""
     cleaned = "".join(
-        c if (c.isascii() and c.isalnum()) else "-" for c in (text or "").lower())
+        c if (c.isascii() and c.isalnum()) else "-" for c in name.lower())
     while "--" in cleaned:
         cleaned = cleaned.replace("--", "-")
-    return cleaned.strip("-")[:48] or "routine"
+    cleaned = cleaned.strip("-")
+
+    # Faithful when every character of the name survived as itself: then the
+    # id distinguishes names the way the name does.
+    faithful = bool(cleaned) and len(cleaned) <= 48 and all(
+        c.isascii() and (c.isalnum() or c in " -_") for c in name.strip())
+    if faithful:
+        return cleaned
+
+    digest = hashlib.sha256(name.strip().lower().encode("utf-8")).hexdigest()[:10]
+    stem = cleaned[:37].strip("-")
+    return f"{stem}-{digest}" if stem else f"routine-{digest}"
 
 
 class RoutineStore:
@@ -205,16 +236,28 @@ class RoutineStore:
         schedule = parse(str(routine.get("schedule") or "")).spec
         existing = self.get(routine_id)
 
+        # An update takes its defaults from the row that is already there, not
+        # from the shipped defaults. The editor does not send back every field
+        # - timezone and grace are not on its form - and rebuilding those from
+        # defaults quietly reset them every time anybody edited a routine's
+        # name. A field is only changed when the payload actually carries it.
+        def field(key: str, fallback: Any) -> Any:
+            if key in routine and routine[key] is not None:
+                return routine[key]
+            if existing is not None and key in existing:
+                return existing[key]
+            return fallback
+
         values: dict[str, Any] = {
             "name": name,
-            "action": str(routine.get("action") or "briefing").strip(),
-            "instruction": str(routine.get("instruction") or "").strip(),
+            "action": str(field("action", "briefing") or "briefing").strip(),
+            "instruction": str(field("instruction", "") or "").strip(),
             "schedule": schedule,
-            "timezone": str(routine.get("timezone") or "").strip(),
-            "enabled": 1 if routine.get("enabled", True) else 0,
-            "catch_up": 1 if routine.get("catch_up", True) else 0,
-            "grace_seconds": max(0, int(routine.get("grace_seconds", 3600) or 0)),
-            "speak": 1 if routine.get("speak", True) else 0,
+            "timezone": str(field("timezone", "") or "").strip(),
+            "enabled": 1 if field("enabled", True) else 0,
+            "catch_up": 1 if field("catch_up", True) else 0,
+            "grace_seconds": max(0, int(field("grace_seconds", 3600) or 0)),
+            "speak": 1 if field("speak", True) else 0,
         }
 
         conn = self.connection()
@@ -234,6 +277,19 @@ class RoutineStore:
         saved = self.get(routine_id)
         assert saved is not None
         return saved
+
+    def flag(self, key: str) -> bool:
+        """Has this one-time thing already happened?"""
+        row = self.connection().execute(
+            "SELECT value FROM routine_meta WHERE key=?", (key,)).fetchone()
+        return bool(row and str(row["value"]).strip())
+
+    def set_flag(self, key: str, value: str = "1") -> None:
+        conn = self.connection()
+        conn.execute(
+            "INSERT INTO routine_meta(key, value) VALUES(?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+        conn.commit()
 
     def delete(self, routine_id: str) -> bool:
         conn = self.connection()
@@ -382,9 +438,19 @@ class RoutineStore:
         is no call in progress. So it waits here, and the next conversation
         starts knowing it exists.
         """
+        # Joined against the routine so that `speak=False` is honoured. It is
+        # the setting's whole meaning - "run this, don't read it out" - and
+        # without the join a silent routine's output was picked up by the
+        # backlog and announced at the start of the next call anyway. A run
+        # whose routine has since been deleted still counts: it was produced
+        # under whatever setting was in force then, and dropping it silently
+        # loses the one copy of it.
         rows = self.connection().execute(
-            "SELECT * FROM routine_runs WHERE delivered=0 AND status=? "
-            "AND output<>'' ORDER BY id DESC LIMIT ?", (STATUS_DONE, int(limit)))
+            "SELECT runs.* FROM routine_runs AS runs "
+            "LEFT JOIN routines ON routines.id = runs.routine_id "
+            "WHERE runs.delivered=0 AND runs.status=? AND runs.output<>'' "
+            "AND (routines.speak IS NULL OR routines.speak=1) "
+            "ORDER BY runs.id DESC LIMIT ?", (STATUS_DONE, int(limit)))
         return [dict(row) for row in rows]
 
     def mark_delivered(self, run_ids: list[int]) -> int:

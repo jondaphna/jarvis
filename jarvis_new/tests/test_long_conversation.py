@@ -13,11 +13,21 @@ and the context-window guard switched on.
 """
 
 import inspect
+import os
 
 import pytest
 from google.genai import types as genai_types
 
 import agent
+
+#: Constructing `Assistant()` builds the realtime model, which needs a LiveKit
+#: key even though what is asserted below is only its configuration. No key, no
+#: fixture - so these skip rather than erroring in collection.
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("LIVEKIT_API_KEY"),
+    reason="needs LIVEKIT_API_KEY to construct the realtime model",
+)
+
 
 
 class LiveContext:

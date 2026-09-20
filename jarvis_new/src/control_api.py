@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import secrets
 import sys
 import threading
@@ -28,6 +29,16 @@ from urllib.parse import unquote, urlparse
 
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT_PORT = 8765
+
+#: The most a request body may declare. This is a local settings API - the
+#: biggest thing anyone legitimately sends is a settings document or a routine
+#: - and the declared length was previously the size of an allocation chosen
+#: by the caller.
+MAX_BODY_BYTES = 256 * 1024
+
+
+class RequestTooLargeError(ValueError):
+    """A body bigger than this API will read. Answered with 413."""
 
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
@@ -45,19 +56,47 @@ def token_path() -> Path:
 
 
 def load_token() -> str:
-    """The shared secret, created once and reused."""
+    """The shared secret, created once and reused.
+
+    Creation is a single exclusive open rather than "is it there? no? write
+    one". Two processes starting together - and `butler-web.bat` starts the
+    control API alongside the one `butler-agent.bat` may already have started
+    - both used to find no file, both wrote, and each went on believing its
+    own token was the one. Whoever loses the race now reads the winner's.
+    """
     path = token_path()
-    try:
-        existing = path.read_text(encoding="utf-8").strip()
-        if existing:
-            return existing
-    except OSError:
-        pass
-    fresh = secrets.token_urlsafe(32)
-    path.write_text(fresh, encoding="utf-8")
-    with contextlib.suppress(OSError):     # best effort; Windows ignores mode
-        path.chmod(0o600)
-    return fresh
+    for _ in range(3):
+        try:
+            existing = path.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+        except OSError:
+            pass
+
+        fresh = secrets.token_urlsafe(32)
+        try:
+            # O_EXCL: the file is created by exactly one caller, and the mode
+            # is set as it is created rather than a moment afterwards.
+            handle = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            continue                        # somebody else won; read theirs
+        except OSError:
+            # No exclusive create available here. Fall back to the old way
+            # rather than leaving the API with no token at all.
+            path.write_text(fresh, encoding="utf-8")
+            with contextlib.suppress(OSError):
+                path.chmod(0o600)
+            return fresh
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(fresh)
+        with contextlib.suppress(OSError):  # best effort; Windows ignores mode
+            path.chmod(0o600)
+        return fresh
+
+    # Three rounds of losing the race and still finding nothing to read means
+    # the file cannot be relied on. An in-memory token is still a working
+    # boundary for this process.
+    return secrets.token_urlsafe(32)
 
 
 # --------------------------------------------------------------------------- #
@@ -666,15 +705,39 @@ class _Handler(BaseHTTPRequestHandler):
             self.headers.get("X-Jarvis-Token", ""), self.token)
 
     def _body(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length") or 0)
+        """The request body, as an object, within a size this can hold.
+
+        Three things this used to trust and no longer does. The declared
+        length: `int()` of a header nobody checked, then a read of exactly
+        that many bytes, which is an allocation chosen by the caller. A
+        negative or unparseable length, which reached `rfile.read` as-is. And
+        a JSON scalar, which was wrapped as `{"value": ...}` and let a request
+        that does not match the contract go on to be handled as though it did.
+        """
+        raw_length = (self.headers.get("Content-Length") or "0").strip()
+        try:
+            length = int(raw_length)
+        except ValueError:
+            raise ValueError("Content-Length isn't a number.") from None
+        if length < 0:
+            raise ValueError("Content-Length can't be negative.")
+        if length > MAX_BODY_BYTES:
+            raise RequestTooLargeError(
+                f"That request body is {length} bytes; the limit is "
+                f"{MAX_BODY_BYTES}.")
         if not length:
             return {}
+
         raw = self.rfile.read(length)
+        if len(raw) != length:
+            raise ValueError("The request body ended early.")
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise ValueError(f"That wasn't valid JSON: {exc}") from exc
-        return data if isinstance(data, dict) else {"value": data}
+        if not isinstance(data, dict):
+            raise ValueError("The request body has to be a JSON object.")
+        return data
 
     # -- routes ------------------------------------------------------------ #
 
@@ -701,6 +764,8 @@ class _Handler(BaseHTTPRequestHandler):
 
         try:
             self._send(200, self._dispatch(method, parts))
+        except RequestTooLargeError as exc:
+            self._send(413, {"error": str(exc)})
         except ValueError as exc:
             self._send(400, {"error": str(exc)})
         except Exception as exc:               # pragma: no cover - defensive

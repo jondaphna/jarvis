@@ -151,8 +151,14 @@ class WorkerHost:
     def start(self) -> bool:
         """Bring the thread up. Safe to call twice; the second call is a no-op."""
         with self._lock:
-            if self.running:
-                return True
+            # A live thread is enough to stand down, whether or not it has
+            # finished coming up. `running` also wants `_ready`, and between
+            # the first thread starting and setting it there was a window
+            # where a second caller saw False, cleared `_ready` under the
+            # first thread's feet and started a rival thread - two loops,
+            # two worker sets, one queue attribute, last writer wins.
+            if self._thread is not None and self._thread.is_alive():
+                return self._ready.wait(timeout=5.0)
             self._ready.clear()
             self._thread = threading.Thread(target=self._run, name=self.name,
                                             daemon=True)
@@ -384,6 +390,13 @@ class WorkerHost:
         delay = backoff
 
         while True:
+            if job.cancel_requested:
+                # Asked for while the last attempt was failing, or during the
+                # backoff below. Without this check the loop came back round
+                # and ran a job that had already been marked cancelled.
+                self._set(job, status="cancelled", finished_at=time.time())
+                self._current.pop(job.ref, None)
+                return
             self._set(job, attempts=job.attempts + 1)
             if inspect.iscoroutinefunction(work):
                 inner = asyncio.ensure_future(work(*args, **kwargs))
@@ -414,18 +427,37 @@ class WorkerHost:
                           f"{job.attempts} of {job.max_attempts} ({reason}); "
                           f"retrying in {delay:.0f}s")
                     self._set(job, error=reason)
-                    self._current.pop(job.ref, None)
+                    # The sleep is registered as the job's current work, so
+                    # `cancel()` reaches it. Dropping `_current` for the
+                    # duration of the backoff left a cancel with nothing to
+                    # cancel: it marked the job cancelled and the loop then
+                    # slept it out and ran the job anyway.
+                    napping = asyncio.ensure_future(asyncio.sleep(delay))
+                    self._current[job.ref] = napping
                     try:
-                        await asyncio.sleep(delay)
+                        await napping
                     except asyncio.CancelledError:
                         self._set(job, status="cancelled",
                                   finished_at=time.time())
+                        self._current.pop(job.ref, None)
+                        if job.cancel_requested:
+                            return
                         raise
                     # Doubling rather than a fixed wait: whatever is failing
                     # is usually either momentary or not going to be fixed by
                     # asking again immediately.
                     delay = min(delay * 2, RETRY_CEILING)
                     continue
+                if job.cancel_requested:
+                    # Cancelled while this attempt was on its way to failing.
+                    # The caller was told the job was cancelled, so that is
+                    # what it has to end as - "failed" here would have the
+                    # status contradict the answer `cancel()` already gave,
+                    # and would put a retryable-looking error on a job nobody
+                    # is going to retry.
+                    self._set(job, status="cancelled", finished_at=time.time(),
+                              error=reason)
+                    return
                 self._set(job, status="failed", finished_at=time.time(),
                           error=reason)
                 # Printed rather than swallowed: a background job that fails

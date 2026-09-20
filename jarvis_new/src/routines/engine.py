@@ -40,6 +40,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from . import actions
 from .cron import ScheduleError, parse
 from .store import (
+    SEEDED_KEY,
     STATUS_DONE,
     STATUS_FAILED,
     STATUS_SKIPPED,
@@ -135,6 +136,7 @@ class RoutineEngine:
         self._task: Any = None
         self._lock = threading.RLock()
         self._seed = True
+        self._failed_to_prepare = 0
         self.started = False
 
     # ------------------------------------------------------------------ #
@@ -211,14 +213,31 @@ class RoutineEngine:
         return True
 
     def seed_defaults(self, force: bool = False) -> int:
-        """Put the starting routines in, once, on a fresh database."""
-        if not force and self.store.all():
-            return 0
+        """Put the starting routines in, once, on a fresh database.
+
+        "Once" is recorded in the database rather than inferred from the table
+        being empty. An empty table is not the same as a new one: somebody who
+        deletes every routine means it, and the old check brought the defaults
+        straight back on the next start.
+        """
+        if not force:
+            try:
+                if self.store.flag(SEEDED_KEY) or self.store.all():
+                    # Marked here too, so an install that already has routines
+                    # from before this flag existed does not seed on the day
+                    # its last routine is deleted.
+                    with contextlib.suppress(Exception):
+                        self.store.set_flag(SEEDED_KEY)
+                    return 0
+            except Exception:
+                return 0
         added = 0
         for payload in DEFAULTS:
             with contextlib.suppress(Exception):
                 self.save(dict(payload))
                 added += 1
+        with contextlib.suppress(Exception):
+            self.store.set_flag(SEEDED_KEY)
         return added
 
     # ------------------------------------------------------------------ #
@@ -251,7 +270,11 @@ class RoutineEngine:
 
         due = to_dt(due_at)
         late = (now - due).total_seconds() if due else 0.0
-        grace = int(routine.get("grace_seconds") or DEFAULT_GRACE)
+        # `is None`, not truthiness: a grace of 0 means "if you missed it,
+        # skip it", and `or DEFAULT_GRACE` turned that into an hour - the
+        # opposite instruction.
+        raw_grace = routine.get("grace_seconds")
+        grace = DEFAULT_GRACE if raw_grace is None else max(0, int(raw_grace))
         if late > grace and not routine.get("catch_up"):
             run_id = self.store.start_run(routine_id, trigger="schedule",
                                           due_at=due_at)
@@ -335,15 +358,20 @@ class RoutineEngine:
         return {"recovered": len(closed), "seeded": seeded, "armed": armed}
 
     async def _tick_forever(self) -> None:
-        try:
-            await asyncio.to_thread(self.prepare)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            print(f"  [routines] could not be armed: {type(exc).__name__}: {exc}")
+        prepared = await self._try_to_prepare()
         while True:
             await asyncio.sleep(self.tick_seconds)
             try:
+                if not prepared:
+                    # Arming failed. Until it succeeds there is nothing in the
+                    # table to tick over, so the alternative to retrying is a
+                    # ticker that runs forever and fires nothing - a scheduler
+                    # that is silently off. Start-up is exactly when the file
+                    # is most contended, so a transient failure there must not
+                    # be permanent.
+                    prepared = await self._try_to_prepare()
+                    if not prepared:
+                        continue
                 # Even the check goes to a thread. It is one indexed SELECT,
                 # but it is a SELECT against a file another thread is writing,
                 # and the worker loop has background jobs waiting on it.
@@ -354,6 +382,30 @@ class RoutineEngine:
                 # A ticker that dies is a scheduler that silently stops. It
                 # says so and keeps going.
                 print(f"  [routines] tick failed: {type(exc).__name__}: {exc}")
+
+    async def _try_to_prepare(self) -> bool:
+        """Recover, seed and arm. False if it did not get there this time.
+
+        Says so on the first failure and then every few minutes rather than on
+        every tick: a scheduler that is not scheduling has to be visible, but
+        three lines a minute forever is a console nobody reads.
+        """
+        try:
+            await asyncio.to_thread(self.prepare)
+            if self._failed_to_prepare:
+                print("  Routines armed after "
+                      f"{self._failed_to_prepare} failed attempt(s).")
+                self._failed_to_prepare = 0
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._failed_to_prepare += 1
+            if self._failed_to_prepare == 1 or self._failed_to_prepare % 15 == 0:
+                print(f"  [routines] could not be armed: {type(exc).__name__}: "
+                      f"{exc}. Nothing is scheduled; still trying "
+                      f"(attempt {self._failed_to_prepare}).")
+            return False
 
     def start(self, seed: bool = True) -> bool:
         """Start ticking. Safe to call twice.

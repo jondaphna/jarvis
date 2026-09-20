@@ -1,0 +1,44 @@
+# Was jarvis_new/.github/workflows/template-check.yml, and its check is now the
+# other way round.
+#
+# The original came from the LiveKit starter template, where uv.lock and
+# livekit.toml must NOT be committed, and its own header said to delete it once
+# the repo had been cloned for real use. This repo is real use, and both files
+# are committed on purpose - which means the template's version would have
+# failed on every single push, for ever, by design.
+#
+# What is worth checking is the opposite: that the lockfile stays committed, so
+# a stray .gitignore entry cannot silently turn every CI run and every install
+# into "whatever resolved today".
+name: Lockfile
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lockfile-committed:
+    name: uv.lock is tracked
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check the lockfile is committed
+        run: |
+          if ! git ls-files --error-unmatch jarvis_new/uv.lock >/dev/null 2>&1; then
+            echo "::error::jarvis_new/uv.lock is not tracked by git."
+            echo "The lockfile is what makes a build reproducible. If it was"
+            echo "removed or gitignored, put it back: git add -f jarvis_new/uv.lock"
+            exit 1
+          fi
+          echo "jarvis_new/uv.lock is tracked."
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v1
+        with:
+          version: "latest"
+
+      - name: Check the lockfile matches pyproject.toml
+        working-directory: jarvis_new
+        run: uv lock --check

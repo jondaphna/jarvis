@@ -32,6 +32,7 @@ import contextlib
 import os
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 #: How long a statement waits for the write lock before giving up. Long enough
@@ -41,6 +42,13 @@ BUSY_TIMEOUT_MS = 15000
 
 #: The connect() timeout, in seconds, for acquiring the database itself.
 CONNECT_TIMEOUT = 15.0
+
+#: How long to keep trying to put a new file into WAL mode. This needs its own
+#: loop rather than leaning on `busy_timeout`, because SQLite does not run the
+#: busy handler for a journal-mode change: if another connection has the file
+#: open at that instant it returns SQLITE_BUSY straight away, however patient
+#: the handler is. A second is far longer than the window actually is.
+WAL_RETRY_SECONDS = 1.0
 
 _local = threading.local()
 
@@ -113,6 +121,55 @@ def _key(path: Path | str) -> str:
     return str(Path(path).resolve())
 
 
+def _enable_wal(conn: sqlite3.Connection) -> str:
+    """Put the file into WAL mode, tolerating a racing opener.
+
+    Two threads opening the same database in the same moment - the worker
+    seeding it while the caller reads it - used to surface as
+    `OperationalError: database is locked` from this one statement, and it
+    took the whole connection with it. Arming the routines failed at start-up
+    and nothing was scheduled until the process was restarted.
+
+    The retry is short because the race is short: the mode is a property of
+    the *file*, so the first connection to win sets it and every later one
+    reads back "wal" on its first try. Returns the mode actually in force,
+    which is "delete" only if the file is somewhere WAL is unavailable (a
+    network share), where journalling still works and the caller should carry
+    on rather than fail to open a database over it.
+    """
+    deadline = time.monotonic() + WAL_RETRY_SECONDS
+    last = ""
+    while True:
+        try:
+            row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
+            mode = str(row[0]).lower() if row else ""
+            if mode == "wal":
+                return mode
+            last = mode
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc) and "busy" not in str(exc):
+                raise
+            last = "locked"
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.01)
+
+    # Still not WAL. If somebody else already made it WAL we are fine; that is
+    # the common end of this loop and it is not worth a word. Otherwise say so
+    # once, because a database in rollback-journal mode is a database where a
+    # reader does block a writer, which is the thing this project measured at
+    # 1.4s on the voice path.
+    with contextlib.suppress(sqlite3.Error):
+        row = conn.execute("PRAGMA journal_mode").fetchone()
+        current = str(row[0]).lower() if row else ""
+        if current == "wal":
+            return current
+        print(f"  [db] could not switch to WAL ({last or current or 'unknown'}); "
+              f"continuing in {current or 'the default'} mode.")
+        return current
+    return last
+
+
 def connect(path: Path | str, schema: str = "") -> sqlite3.Connection:
     """This thread's connection to `path`, opening it if it is the first ask.
 
@@ -130,8 +187,10 @@ def connect(path: Path | str, schema: str = "") -> sqlite3.Connection:
         target.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(target), timeout=CONNECT_TIMEOUT)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
+        # Before the journal mode, not after: everything below waits on the
+        # lock properly only once this is set.
         conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+        _enable_wal(conn)
         pool.conns[key] = conn
 
     if schema:

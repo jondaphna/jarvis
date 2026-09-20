@@ -213,6 +213,33 @@ class FileTools:
             f"I'm not allowed to look in {name!r}. Add it in settings if you "
             f"want me to.")
 
+    def contained(self, candidate: Path) -> bool:
+        """Does this file really sit inside a root you allowed?
+
+        `resolve_folder` confines the *folder*, which is not the same thing as
+        confining the files under it: a symlink inside an allowed folder used
+        to be followed straight out of it, and its contents read back. So every
+        candidate is resolved and re-checked against the allowed roots here,
+        and a link is refused outright rather than resolved - following one
+        correctly is a question about the link's target *and* every directory
+        on the way to it, and refusing is the answer that cannot be wrong.
+        """
+        try:
+            if candidate.is_symlink():
+                return False
+            resolved = candidate.resolve(strict=True)
+            if not resolved.is_file():
+                return False
+        except OSError:
+            return False
+        for root in self.roots():
+            try:
+                if resolved.is_relative_to(root.resolve()):
+                    return True
+            except OSError:
+                continue
+        return False
+
     def walk(self, folder: Path | None) -> list[Path]:
         """Every document worth considering, under one folder or all of them."""
         roots = [folder] if folder is not None else self.roots()
@@ -224,7 +251,7 @@ class FileTools:
                 if any(part in SKIP_FOLDERS or part.startswith(".")
                        for part in path.relative_to(root).parts[:-1]):
                     continue
-                if path.is_file() and readable(path):
+                if path.is_file() and readable(path) and self.contained(path):
                     found.append(path)
                 if len(found) > 20_000:          # a runaway folder tree
                     return found

@@ -435,15 +435,34 @@ class PermissionBroker:
         return Risk.MEDIUM, "shell commands need your approval"
 
     def _app_allowed(self, name: str) -> bool:
+        """Is this exact application on the pre-approved list?
+
+        Matching is exact on the name or its stem, plus any glob the user wrote
+        themselves. It used to also accept `allowed in key` - a substring - and
+        that was the wrong shape for an allowlist: approving "notepad" approved
+        every string with "notepad" anywhere in it, including one carrying a
+        quote and a shell separator on its way to the launcher. An allowlist
+        that matches substrings does not decide what runs; the caller does.
+        """
         key = (name or "").strip().lower()
         if not key:
             return False
-        stem = Path(key).stem
+
+        # The stem is compared only for a bare name. `Path(...).stem` throws
+        # away the directory as well as the suffix, so matching it against a
+        # full path approved any executable *called* notepad, wherever it
+        # happened to sit - "c:/untrusted/notepad.exe" included. A name with a
+        # directory in it has to match exactly, or match a glob the user wrote.
+        bare = "/" not in key and "\\" not in key
+        stem = Path(key).stem if bare else None
+
         for allowed in self.settings.get("autonomy.allowed_apps", []) or []:
             allowed = allowed.strip().lower()
             if not allowed:
                 continue
-            if allowed in key or allowed == stem or fnmatch(key, allowed):
+            if allowed == key or (stem is not None and allowed == stem):
+                return True
+            if fnmatch(key, allowed):
                 return True
         return False
 

@@ -148,6 +148,33 @@ class TestAppAllowlist:
         decision = await broker.authorize(Request(CAP_INPUT_CONTROL, "banking-app"))
         assert decision.outcome is Outcome.NEEDS_APPROVAL
 
+    @pytest.mark.parametrize("name", [
+        'notepad" & calc "',
+        "notepad; rm -rf /",
+        "notepad && whoami",
+        "notepad$(id)",
+        "evil-notepad-thing",
+        "c:/untrusted/notepad.exe",
+    ])
+    async def test_a_name_merely_containing_an_allowed_one_is_not_allowed(
+            self, broker, name):
+        """The allowlist matched substrings, and the launcher used a shell.
+
+        Together that turned "you may open Notepad" into "you may run a shell
+        command": any string with `notepad` inside it passed the allowlist and
+        went on to be interpolated into `start "" "..."` with shell=True.
+        """
+        broker.allow_app("notepad")
+        decision = await broker.authorize(Request(CAP_APP_LAUNCH, name))
+        assert decision.outcome is not Outcome.ALLOW
+
+    async def test_the_allowed_app_itself_still_opens(self, broker):
+        """The guard must not cost the case it exists to permit."""
+        broker.allow_app("notepad")
+        for name in ("notepad", "Notepad", "notepad.exe"):
+            decision = await broker.authorize(Request(CAP_APP_LAUNCH, name))
+            assert decision.outcome is Outcome.ALLOW, name
+
 
 class TestSpendCap:
     async def test_daily_cap_stops_further_thinking(self, broker, settings, memory):

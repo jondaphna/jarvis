@@ -217,6 +217,18 @@ class TestInstruct:
 
 class TestContentScripts:
 
+    @pytest.fixture(autouse=True)
+    def content_switched_on(self, monkeypatch):
+        """The content engine is off by default, and the routine now checks.
+
+        These tests are about what the routine does once it is allowed to run,
+        so they say so rather than relying on the switch's default.
+        """
+        import permissions
+
+        monkeypatch.setattr(permissions, "allowed",
+                            lambda key, settings=None: True)
+
     def test_it_queues_rather_than_writing_them_itself(self, monkeypatch):
         from content import pipeline
 
@@ -238,6 +250,28 @@ class TestContentScripts:
         monkeypatch.setattr(pipeline, "queue_scripts", explode)
         assert "couldn't start" in run(
             routine(action="content_scripts", instruction="pasta"))
+
+    def test_the_content_switch_stops_it_queueing(self, monkeypatch):
+        """Turning the engine off has to stop a standing routine too.
+
+        Switching a capability off removes its tools, which covers everything
+        the model asks for - but a routine is not the model asking. Without
+        this check a routine saved while the engine was on carried on queueing
+        work after it was turned off.
+        """
+        import permissions
+        from content import pipeline
+
+        monkeypatch.setattr(permissions, "allowed",
+                            lambda key, settings=None: key != "content")
+
+        queued = []
+        monkeypatch.setattr(pipeline, "queue_scripts",
+                            lambda **kwargs: queued.append(kwargs) or "ref")
+
+        answer = run(routine(action="content_scripts", instruction="pasta"))
+        assert queued == []
+        assert "switched off" in answer
 
     def test_it_never_posts_anything(self):
         """The engine writes. The line it must not cross is publishing, and

@@ -12,6 +12,7 @@ merely *read*, or a hostile page could authorise its own purchase.
 
 from __future__ import annotations
 
+import math
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -22,6 +23,18 @@ from typing import Iterable
 # --------------------------------------------------------------------------- #
 # Capability vocabulary
 # --------------------------------------------------------------------------- #
+
+def valid_amount(amount: object) -> bool:
+    """Is this a number a budget can be checked against?
+
+    `None` is not: a spend with no stated price cannot be shown to fit under a
+    cap, so it must not match one. Nor is a bool (which is an `int` in Python
+    and would arrive as 0 or 1), a negative (which would *credit* the budget),
+    or a NaN or infinity (which compare in ways that quietly defeat the check).
+    """
+    return (isinstance(amount, (int, float)) and not isinstance(amount, bool)
+            and math.isfinite(amount) and amount >= 0)
+
 
 CAP_FS_READ = "fs.read"
 CAP_FS_WRITE = "fs.write"
@@ -115,14 +128,25 @@ class Grant:
             target = str(resource).lower()
             if not any(fnmatch(target, pattern.lower()) for pattern in self.resources):
                 return False
-        if amount_usd is not None and self.max_amount_usd is not None:
+        if self.max_amount_usd is not None:
+            # A capped grant is only satisfied by a *known, sane* amount. It
+            # used to check the cap only when an amount was supplied, so a
+            # request that named no price matched a grant with a price limit -
+            # the one case the limit exists for. `valid_amount` also rejects
+            # negatives, which `consume` would otherwise subtract from the
+            # running total, and non-finite values, which pass every
+            # comparison without meaning anything.
+            if not valid_amount(amount_usd):
+                return False
             if self.spent_usd + amount_usd > self.max_amount_usd + 1e-9:
                 return False
+        elif amount_usd is not None and not valid_amount(amount_usd):
+            return False
         return True
 
     def consume(self, amount_usd: float | None = None) -> None:
         self.used += 1
-        if amount_usd:
+        if valid_amount(amount_usd) and amount_usd > 0:
             self.spent_usd += amount_usd
 
     # -- display --------------------------------------------------------- #

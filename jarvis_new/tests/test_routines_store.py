@@ -54,11 +54,54 @@ class TestSaving:
     @pytest.mark.parametrize("name,expected", [
         ("Good morning briefing", "good-morning-briefing"),
         ("  Spaces   everywhere  ", "spaces-everywhere"),
-        ("Ünïcode & symbols!", "n-code-symbols"),
-        ("-----", "routine"),
     ])
     def test_ids_are_readable_and_never_empty(self, name, expected):
+        """A plain name keeps the id it has always had - nothing to migrate."""
         assert slug(name) == expected
+
+    @pytest.mark.parametrize("name", [
+        "Ünïcode & symbols!",
+        "-----",
+        "בוקר טוב",
+    ])
+    def test_a_name_ascii_cannot_carry_still_gets_a_readable_id(self, name):
+        made = slug(name)
+        assert made
+        assert made == made.lower()
+        assert all(c.isascii() and (c.isalnum() or c == "-") for c in made)
+
+    @pytest.mark.parametrize("first,second", [
+        ("בוקר טוב", "ערב טוב"),
+        ("-----", "!!!!!"),
+        ("Ünïcode & symbols!", "Änïcode & symbols!"),
+    ])
+    def test_two_different_names_never_share_an_id(self, first, second):
+        """The bug this guards: every all-Hebrew name slugged to "routine".
+
+        Two routines with different Hebrew names became one row, and the second
+        save silently overwrote the first.
+        """
+        assert slug(first) != slug(second)
+
+    def test_two_hebrew_routines_are_two_routines(self, store):
+        store.save(a_routine(name="בוקר טוב"))
+        store.save(a_routine(name="ערב טוב"))
+        assert len(store.all()) == 2
+
+    def test_an_update_keeps_fields_the_editor_did_not_send(self, store):
+        """The panel's form has no timezone or grace field.
+
+        Rebuilding those from defaults on every save meant renaming a routine
+        quietly reset them.
+        """
+        saved = store.save(a_routine(timezone="Asia/Jerusalem",
+                                     grace_seconds=120, speak=False))
+        again = store.save({"id": saved["id"], "name": "Renamed",
+                            "schedule": saved["schedule"]})
+        assert again["name"] == "Renamed"
+        assert again["timezone"] == "Asia/Jerusalem"
+        assert again["grace_seconds"] == 120
+        assert again["speak"] == 0
 
     def test_saving_the_same_name_twice_edits_rather_than_duplicates(self, store):
         store.save(a_routine())

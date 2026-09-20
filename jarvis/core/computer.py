@@ -12,7 +12,9 @@ run anywhere (and so the test suite can exercise this on a build server).
 from __future__ import annotations
 
 import asyncio
+import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +29,11 @@ from .events import log
 IS_WINDOWS = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 IS_LINUX = not IS_WINDOWS and not IS_MAC
+
+#: Anything that could change the meaning of a command line, a path, or a
+#: shell word. An unrecognised app name is handed to the operating system as a
+#: target, so these are refused at the door rather than escaped per platform.
+_SHELL_METACHARACTERS = re.compile(r"""[&|;<>^"'`$()\[\]{}!*?\n\r\t\x00]""")
 
 #: Friendly name -> what to actually launch, per platform.
 APP_ALIASES: dict[str, dict[str, str]] = {
@@ -129,6 +136,13 @@ class Computer:
             target = alias.get(platform_key) or ""
             if target:
                 return "alias", target
+        if _SHELL_METACHARACTERS.search(key):
+            # An unrecognised name goes to the OS as-is. Anything that could
+            # change the meaning of a command line stops here rather than at
+            # the launcher, so there is one refusal instead of one per platform.
+            raise ComputerError(
+                f"'{name}' isn't an application name I recognise, and it "
+                f"contains characters I won't pass to the system.")
         return "raw", key
 
     async def open_app(self, name: str) -> str:
@@ -140,8 +154,13 @@ class Computer:
 
         def _launch() -> str:
             if IS_WINDOWS:
-                # `start` resolves app paths, App Paths registry entries and URIs.
-                subprocess.Popen(f'start "" "{target}"', shell=True)
+                # `os.startfile` is ShellExecute: it resolves App Paths registry
+                # entries, registered URI schemes and .lnk shortcuts, exactly as
+                # `start` did. What it does not have is a command line, so there
+                # is nothing for a quote or an `&` in the name to break out of.
+                # The previous version built `start "" "{target}"` and ran it
+                # through cmd with shell=True.
+                os.startfile(target)          # Windows-only; no shell involved
                 return f"Opened {target}"
             if IS_MAC:
                 subprocess.Popen(["open", "-a", target])
