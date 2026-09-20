@@ -15,6 +15,7 @@ enough - ids are reused - so the tag pairs it with the process start time.
 
 import sqlite3
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -22,6 +23,19 @@ import db
 
 SCHEMA_A = "CREATE TABLE IF NOT EXISTS thing_a (id INTEGER PRIMARY KEY, v TEXT);"
 SCHEMA_B = "CREATE TABLE IF NOT EXISTS thing_b (id INTEGER PRIMARY KEY, v TEXT);"
+
+
+class _Row:
+    """What `PRAGMA journal_mode` gives back: one row, read by index."""
+
+    def __init__(self, value: str):
+        self.value = value
+
+    def fetchone(self):
+        return (self.value,)
+
+    def __getitem__(self, index):
+        return (self.value,)[index]
 
 
 @pytest.fixture(autouse=True)
@@ -107,6 +121,96 @@ class TestPragmas:
         conn = db.connect(tmp_path / "jarvis.db", SCHEMA_A)
         conn.execute("INSERT INTO thing_a(v) VALUES('x')")
         assert conn.execute("SELECT v FROM thing_a").fetchone()["v"] == "x"
+
+    def test_the_busy_timeout_is_set_before_the_journal_mode(self, tmp_path):
+        """Order matters and is not obvious. SQLite does not run the busy
+        handler for a journal-mode change, so a racing opener gets SQLITE_BUSY
+        at once - but everything after it does wait, and only if this pragma
+        is already in force."""
+        source = (Path(db.__file__)).read_text(encoding="utf-8")
+        body = source[source.index("def connect("):]
+        assert body.index("busy_timeout") < body.index("_enable_wal")
+
+    def test_a_racing_opener_does_not_break_the_connection(self, tmp_path):
+        """Two threads opening one file in the same instant is the ordinary
+        case here - the worker seeds the database while the caller reads it -
+        and it used to surface as `database is locked` out of the journal-mode
+        pragma, taking the whole connection with it."""
+        path = tmp_path / "jarvis.db"
+        start = threading.Barrier(8)
+        modes: list[str] = []
+        failures: list[Exception] = []
+
+        def open_it():
+            try:
+                start.wait(timeout=10)
+                conn = db.connect(path, SCHEMA_A)
+                modes.append(
+                    str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower())
+            except Exception as exc:
+                failures.append(exc)
+            finally:
+                db.close_thread()
+
+        threads = [threading.Thread(target=open_it) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=20)
+
+        assert not failures, f"opening the database raised: {failures[0]!r}"
+        assert modes == ["wal"] * 8
+
+    def test_a_lock_that_clears_is_waited_out(self, monkeypatch):
+        """`sqlite3.Connection` is a C type nothing can be patched onto, so
+        the contention is staged on a stand-in rather than on a real file."""
+        monkeypatch.setattr(db, "WAL_RETRY_SECONDS", 2.0)
+
+        class BusyThenFine:
+            def __init__(self):
+                self.tries = 0
+
+            def execute(self, sql):
+                if "journal_mode=wal" not in sql.lower().replace(" ", ""):
+                    return _Row("wal")
+                self.tries += 1
+                if self.tries < 3:
+                    raise sqlite3.OperationalError("database is locked")
+                return _Row("wal")
+
+        fake = BusyThenFine()
+        assert db._enable_wal(fake) == "wal"
+        assert fake.tries == 3
+
+    def test_a_file_that_will_never_do_wal_still_opens(self, monkeypatch,
+                                                      capsys):
+        """A network share is the real case. Journalling still works there, so
+        refusing to open the database at all would be the worse failure."""
+        monkeypatch.setattr(db, "WAL_RETRY_SECONDS", 0.05)
+
+        class NeverWal:
+            def execute(self, sql):
+                if "journal_mode=wal" in sql.lower().replace(" ", ""):
+                    return _Row("delete")
+                return _Row("delete")
+
+        assert db._enable_wal(NeverWal()) == "delete"
+        assert "could not switch to WAL" in capsys.readouterr().out
+
+    def test_somebody_else_winning_the_race_is_not_a_complaint(self,
+                                                               monkeypatch,
+                                                               capsys):
+        """The usual end of the loop: another connection set WAL first."""
+        monkeypatch.setattr(db, "WAL_RETRY_SECONDS", 0.0)
+
+        class AlreadyWal:
+            def execute(self, sql):
+                if "journal_mode=wal" in sql.lower().replace(" ", ""):
+                    raise sqlite3.OperationalError("database is locked")
+                return _Row("wal")
+
+        assert db._enable_wal(AlreadyWal()) == "wal"
+        assert capsys.readouterr().out == ""
 
 
 class TestLettingGo:

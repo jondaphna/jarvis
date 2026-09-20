@@ -136,6 +136,7 @@ class RoutineEngine:
         self._task: Any = None
         self._lock = threading.RLock()
         self._seed = True
+        self._failed_to_prepare = 0
         self.started = False
 
     # ------------------------------------------------------------------ #
@@ -357,15 +358,20 @@ class RoutineEngine:
         return {"recovered": len(closed), "seeded": seeded, "armed": armed}
 
     async def _tick_forever(self) -> None:
-        try:
-            await asyncio.to_thread(self.prepare)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            print(f"  [routines] could not be armed: {type(exc).__name__}: {exc}")
+        prepared = await self._try_to_prepare()
         while True:
             await asyncio.sleep(self.tick_seconds)
             try:
+                if not prepared:
+                    # Arming failed. Until it succeeds there is nothing in the
+                    # table to tick over, so the alternative to retrying is a
+                    # ticker that runs forever and fires nothing - a scheduler
+                    # that is silently off. Start-up is exactly when the file
+                    # is most contended, so a transient failure there must not
+                    # be permanent.
+                    prepared = await self._try_to_prepare()
+                    if not prepared:
+                        continue
                 # Even the check goes to a thread. It is one indexed SELECT,
                 # but it is a SELECT against a file another thread is writing,
                 # and the worker loop has background jobs waiting on it.
@@ -376,6 +382,30 @@ class RoutineEngine:
                 # A ticker that dies is a scheduler that silently stops. It
                 # says so and keeps going.
                 print(f"  [routines] tick failed: {type(exc).__name__}: {exc}")
+
+    async def _try_to_prepare(self) -> bool:
+        """Recover, seed and arm. False if it did not get there this time.
+
+        Says so on the first failure and then every few minutes rather than on
+        every tick: a scheduler that is not scheduling has to be visible, but
+        three lines a minute forever is a console nobody reads.
+        """
+        try:
+            await asyncio.to_thread(self.prepare)
+            if self._failed_to_prepare:
+                print("  Routines armed after "
+                      f"{self._failed_to_prepare} failed attempt(s).")
+                self._failed_to_prepare = 0
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._failed_to_prepare += 1
+            if self._failed_to_prepare == 1 or self._failed_to_prepare % 15 == 0:
+                print(f"  [routines] could not be armed: {type(exc).__name__}: "
+                      f"{exc}. Nothing is scheduled; still trying "
+                      f"(attempt {self._failed_to_prepare}).")
+            return False
 
     def start(self, seed: bool = True) -> bool:
         """Start ticking. Safe to call twice.
