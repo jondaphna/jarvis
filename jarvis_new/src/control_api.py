@@ -518,6 +518,53 @@ class Control:
                     "in_progress": 0, "concurrency": 1, "jobs": [],
                     "error": str(exc)}
 
+    def services(self) -> dict[str, Any]:
+        """What the always-on background side is doing, for the kill switch.
+
+        In-memory only, like `workers()`: the dashboard polls this while it is
+        open and looking at the machine has to stay free.
+        """
+        try:
+            import services as service_layer
+
+            return service_layer.state()
+        except Exception as exc:
+            return {"state": "unknown", "running": False, "killed": False,
+                    "error": f"{type(exc).__name__}: {exc}"}
+
+    def set_services(self, action: str) -> dict[str, Any]:
+        """The master switch: `kill`, `start` or `restart`.
+
+        What "kill" can and cannot do is worth being exact about, because the
+        button says kill and somebody will believe it. It stops the routine
+        ticker, cancels every queued and running job, and stops the worker
+        host. A queued job never starts. A job that is a coroutine stops at its
+        next await.
+
+        A job that is a plain blocking function does not stop: Python cannot
+        end a thread from outside, so an FFmpeg render or an API call already
+        in flight runs to its end with nobody waiting for the result. It is
+        cancelled from every caller's point of view and nothing new follows it.
+        The reply says how many were cancelled and what is still winding down
+        rather than reporting an empty machine.
+
+        The voice call is deliberately untouched. It is not background work,
+        and cutting somebody off mid-sentence because they pressed a button
+        labelled "stop the background jobs" is not what the button says.
+        """
+        import services as service_layer
+
+        wanted = (action or "").strip().lower()
+        if wanted in ("kill", "stop", "off"):
+            return service_layer.kill(reason="dashboard kill switch")
+        if wanted in ("start", "on"):
+            return service_layer.start(reason="dashboard")
+        if wanted == "restart":
+            return service_layer.restart(reason="dashboard")
+        raise ValueError(
+            f"{action!r} isn't something the services switch does. "
+            f"Use 'kill', 'start' or 'restart'.")
+
     def set_workers_paused(self, paused: bool) -> dict[str, Any]:
         """Hold back background work, or let it flow again.
 
@@ -869,6 +916,13 @@ class _Handler(BaseHTTPRequestHandler):
                 body = self._body()
                 return control.set_workers_paused(bool(body.get("paused", True)))
 
+        if head == "services":
+            if method == "GET":
+                return control.services()
+            if method == "POST":
+                body = self._body()
+                return control.set_services(str(body.get("action", "")))
+
         if head == "costs" and method == "GET":
             return control.costs()
 
@@ -912,8 +966,22 @@ def serve_in_background(port: int = DEFAULT_PORT) -> bool:
         return False
 
 
-def serve(port: int = DEFAULT_PORT, background: bool = False) -> ThreadingHTTPServer:
-    """Start the control API on localhost."""
+def serve(port: int = DEFAULT_PORT, background: bool = False,
+          with_services: bool = True) -> ThreadingHTTPServer:
+    """Start the control API on localhost, and the background services with it.
+
+    Binding the port is also the election for who runs the workers and the
+    routine ticker. Two processes can try to be the control API - the voice
+    agent starts one, and `butler-web.bat` starts another beside it - and only
+    one of them can have the socket. Tying the services to the socket is what
+    stops both processes running their own worker host, which is what used to
+    make "pause the workers" pause a host that was not running the job you were
+    looking at. See `services` for the whole argument.
+
+    The bind comes first and the services second, deliberately: if the port is
+    taken, `ThreadingHTTPServer` raises here and the services are never touched,
+    which is exactly the behaviour the losing process needs.
+    """
     _Handler.control = Control()
     _Handler.token = load_token()
 
@@ -922,6 +990,11 @@ def serve(port: int = DEFAULT_PORT, background: bool = False) -> ThreadingHTTPSe
         thread = threading.Thread(target=server.serve_forever, daemon=True,
                                   name="jarvis-control-api")
         thread.start()
+
+    if with_services:
+        import services
+
+        services.start(reason=f"control API bound to port {port}")
     return server
 
 

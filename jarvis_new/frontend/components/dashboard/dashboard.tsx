@@ -32,10 +32,11 @@ import {
 } from '@/components/app/control-panel';
 import { JarvisBackground } from '@/components/app/jarvis-background';
 import { usePolled } from '@/hooks/useControl';
-import { type ContentSnapshot, type RoutinesSnapshot, api } from '@/lib/jarvis';
+import { type ContentSnapshot, type RoutinesSnapshot, type ServicesState, api } from '@/lib/jarvis';
 import { cn } from '@/lib/shadcn/utils';
 import { getSandboxTokenSource } from '@/lib/utils';
 import { ContentPanel } from './content-panel';
+import { KillSwitch } from './kill-switch';
 import { Action, Card, Empty, Pill } from './kit';
 import { LivePanel } from './live-panel';
 import { PermissionsPanel } from './permissions-panel';
@@ -163,6 +164,10 @@ export function DashboardBody({
 
   const content = usePolled<ContentSnapshot>('content', CONTENT_EVERY);
   const routines = usePolled<RoutinesSnapshot>('routines', ROUTINES_EVERY);
+  //  In-memory on the service's side and polled with the rest of the live
+  //  surface, because the question the kill switch answers - "is anything
+  //  still running" - is only useful if it is current when you press it.
+  const services = usePolled<ServicesState>('services', CONTENT_EVERY);
 
   /**
    * `state` is the expensive call - it decrypts the vault and enumerates
@@ -246,7 +251,10 @@ export function DashboardBody({
             {offline && <Offline message={settingsError} onRetry={refreshAll} />}
 
             {section === 'live' && (
-              <LivePanel content={content.data} routines={routines.data} reload={refreshAll} />
+              <div className="space-y-4">
+                <LivePanel content={content.data} routines={routines.data} reload={refreshAll} />
+                <KillSwitch services={services.data} reload={services.reload} />
+              </div>
             )}
 
             {section === 'content' && (

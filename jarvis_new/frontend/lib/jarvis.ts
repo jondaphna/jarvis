@@ -54,6 +54,37 @@ export type Permission = {
   risk: Risk;
 };
 
+/**
+ * The always-on background side: the worker host and the routine ticker,
+ * owned by whichever process holds the control API's port.
+ *
+ * `owner` and `owns_services` exist because there can be more than one JARVIS
+ * process on the machine - the voice agent and a standalone control API - and
+ * only one of them runs the services. Without this the dashboard could show
+ * "workers idle" while the other process was busy.
+ */
+export type ServicesState = {
+  /** 'running' | 'stopped' | 'killed' | 'unknown'. `killed` was chosen. */
+  state: string;
+  running: boolean;
+  killed: boolean;
+  owner: string;
+  this_process: string;
+  owns_services: boolean;
+  uptime_seconds: number;
+  error: string;
+  /** How many jobs the last kill cancelled. Only present on a kill reply. */
+  cancelled?: number;
+  workers: {
+    running: boolean;
+    paused: boolean;
+    queued: number;
+    in_progress: number;
+    error?: string;
+  };
+  routines: { ticking: boolean; error?: string };
+};
+
 export type WorkerJob = {
   ref: string;
   name: string;
