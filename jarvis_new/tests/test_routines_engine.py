@@ -15,6 +15,7 @@ Everything here uses a real WorkerHost, on a real thread, with a real event
 loop. Faking it would test the fake.
 """
 
+import sqlite3
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -432,6 +433,28 @@ class TestTheTicker:
     def test_starting_twice_is_a_no_op(self, engine):
         engine.start()
         assert engine.start() is True
+
+    def test_arming_is_retried_after_a_transient_failure(self, engine,
+                                                         monkeypatch):
+        """Start-up is when the database is busiest, and arming used to be a
+        single attempt: one `database is locked` at the wrong moment left a
+        ticker that ticked forever over an empty table. Nothing fired again
+        until the process was restarted, and nothing said so."""
+        attempts = []
+        real = engine.prepare
+
+        def flaky():
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise sqlite3.OperationalError("database is locked")
+            return real()
+
+        monkeypatch.setattr(engine, "prepare", flaky)
+
+        assert engine.start() is True
+        assert wait_for(lambda: engine.store.all()), \
+            "the first failure was permanent"
+        assert len(attempts) >= 2
 
     def test_the_ticker_fires_something_due_without_being_asked(self, engine):
         """The end-to-end proof: nothing calls tick, and it still runs."""

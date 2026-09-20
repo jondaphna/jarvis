@@ -135,6 +135,45 @@ class TestItStaysWhereItIsAllowed:
         (tmp_path / "Documents").mkdir()
         assert [p.name for p in files.default_roots()] == ["Documents"]
 
+    def test_a_symlink_out_of_your_roots_is_not_followed(self, finder,
+                                                         workspace) -> None:
+        """Confining the folder is not the same as confining the files in it.
+
+        `resolve_folder` refuses a path outside the roots, but the walk used to
+        accept anything it found below an allowed folder and read it. A link
+        inside Documents pointing at a file outside it was returned by search,
+        contents and all.
+        """
+        outside = workspace / "private"
+        outside.mkdir()
+        secret = outside / "payslip.txt"
+        secret.write_text("salary 98000 pricing pricing pricing",
+                          encoding="utf-8")
+        (workspace / "Documents" / "innocent.txt").symlink_to(secret)
+
+        assert secret not in finder.walk(None)
+        assert not any(path.name == "innocent.txt" for path in finder.walk(None))
+
+    async def test_a_linked_file_does_not_come_back_from_a_search(
+            self, finder, workspace) -> None:
+        outside = workspace / "private"
+        outside.mkdir()
+        secret = outside / "payslip.txt"
+        secret.write_text("salary 98000 sekritword", encoding="utf-8")
+        (workspace / "Documents" / "innocent.txt").symlink_to(secret)
+
+        answer = str(await finder.search_my_files._func(finder, None,
+                                                       "sekritword"))
+        assert "98000" not in answer
+        assert "payslip" not in answer
+
+    def test_an_ordinary_file_in_your_roots_is_still_found(self, finder,
+                                                           workspace) -> None:
+        """The guard must not cost the normal case."""
+        names = {path.name for path in finder.walk(None)}
+        assert "business plan.md" in names
+        assert "invoice-march.txt" in names
+
 
 class TestItNeverChangesAnything:
     def test_there_is_no_write_tool_here(self) -> None:

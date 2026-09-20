@@ -166,6 +166,11 @@ class ContentStore:
                     (candidate, kind, topic.strip(), style.strip(),
                      account.strip(), STATUS_QUEUED, _now(), db.process_tag()))
             except sqlite3.IntegrityError:
+                # Roll back before trying again. A failed statement leaves the
+                # transaction open, and the next attempt then runs inside it -
+                # so a retry that succeeds commits whatever else the caller
+                # had pending, and one that fails takes the lot down with it.
+                conn.rollback()
                 if supplied or attempt == 2:
                     raise
                 continue
@@ -174,10 +179,17 @@ class ContentStore:
         raise sqlite3.IntegrityError("couldn't find a free job reference")
 
     def start_job(self, ref: str, stage: str = "") -> None:
+        """Mark the job as running now, by this process.
+
+        The finish timestamp is cleared as well. Without that a retry shows a
+        row that is running and yet finished at a time in the past, which is
+        not a state the job was ever in and reads, to anyone looking at the
+        panel, as a job that finished and then started itself again.
+        """
         conn = self.connection()
         conn.execute(
-            "UPDATE content_jobs SET status=?, stage=?, started_at=?, owner=? "
-            "WHERE ref=?",
+            "UPDATE content_jobs SET status=?, stage=?, started_at=?, owner=?, "
+            "finished_at=NULL WHERE ref=?",
             (STATUS_RUNNING, stage, _now(), db.process_tag(), ref))
         conn.commit()
 
@@ -220,12 +232,58 @@ class ContentStore:
         conn.commit()
 
     def finish_job(self, ref: str, result: Any = None, stage: str = "") -> None:
+        """Mark the job done, and clear whatever error it used to carry.
+
+        A job that failed and was retried successfully is a job that
+        succeeded. Leaving the old error on the row shows the panel a green
+        job with a red explanation underneath it.
+        """
         conn = self.connection()
         conn.execute(
-            "UPDATE content_jobs SET status=?, stage=?, finished_at=?, result=? "
-            "WHERE ref=?",
+            "UPDATE content_jobs SET status=?, stage=?, finished_at=?, result=?, "
+            "error='' WHERE ref=?",
             (STATUS_DONE, stage, _now(), _dump(result), ref))
         conn.commit()
+
+    def complete_scripts(self, ref: str, scripts: list[Any],
+                         result: Any) -> None:
+        """Store the scripts and mark the job done, as one transaction.
+
+        Written as one statement-group because the alternative is what this
+        replaces: insert each asset, commit, then update the job. A failure
+        anywhere in that sequence left the row running with some of its
+        scripts already stored, and the retry - which is on by default for
+        script jobs - inserted the whole set a second time. Here either the
+        job is done with exactly this set of scripts, or nothing changed.
+
+        Replacing the script assets rather than versioning them is right for
+        a pipeline that ends at scripts. Once a later stage points at a
+        particular script, these need to become immutable versions instead:
+        deleting one out from under an approved render is a different and
+        worse bug than the one being fixed here.
+        """
+        rows = [(ref, "script", "", _dump(script.as_dict()),
+                 _dump({"hook": script.hook,
+                        "seconds": script.estimated_seconds()}), _now())
+                for script in scripts]
+        conn = self.connection()
+        with conn:
+            # This UPDATE opens the write transaction, so the existence check
+            # and everything after it happen under the same lock.
+            cursor = conn.execute(
+                "UPDATE content_jobs SET stage='script' WHERE ref=?", (ref,))
+            if cursor.rowcount != 1:
+                raise ValueError(f"no content job exists for {ref}")
+            conn.execute(
+                "DELETE FROM content_assets WHERE job_ref=? AND kind='script'",
+                (ref,))
+            conn.executemany(
+                "INSERT INTO content_assets(job_ref, kind, path, body, meta, at) "
+                "VALUES(?,?,?,?,?,?)", rows)
+            conn.execute(
+                "UPDATE content_jobs SET status=?, stage='script', finished_at=?, "
+                "result=?, error='' WHERE ref=?",
+                (STATUS_DONE, _now(), _dump(result), ref))
 
     def fail_job(self, ref: str, error: str, stage: str = "") -> None:
         conn = self.connection()

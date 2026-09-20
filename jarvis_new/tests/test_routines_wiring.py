@@ -16,23 +16,48 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 
 
 class TestTheAgentStartsIt:
+    """These used to assert the opposite, and they were right to at the time.
+
+    The ticker was started in the call entrypoint and stopped by a shutdown
+    callback, and these tests held that wiring in place. That wiring was the
+    bug: a ticker that starts with a call and stops with it is a ticker that
+    does not exist while nobody is talking, which is precisely when a standing
+    routine is supposed to fire.
+
+    So the contract they protect has moved rather than gone. What the ticker
+    must not be tied to is a job; what it must be tied to is the process. The
+    tests below are that, the other way round.
+    """
 
     def test_the_agent_imports_routines(self):
         assert "import routines" in (SRC / "agent.py").read_text(encoding="utf-8")
 
-    def test_the_agent_starts_them_when_a_call_begins(self):
+    def test_the_ticker_does_not_start_inside_the_call(self):
+        """The `while I'm away` case: nobody is on a call at 07:30."""
         source = (SRC / "agent.py").read_text(encoding="utf-8")
-        assert "routines.start_routines()" in source
+        entrypoint = source[source.index("async def my_agent("):
+                            source.index("\nif __name__ ==")]
+        assert "routines.start_routines()" not in entrypoint
 
-    def test_the_agent_stops_them_when_the_call_ends(self):
-        """A ticker that outlives its call is a ticker per call, forever."""
+    def test_the_ticker_is_not_stopped_when_the_call_ends(self):
         source = (SRC / "agent.py").read_text(encoding="utf-8")
-        assert "ctx.add_shutdown_callback(routines.stop_routines)" in source
+        assert "ctx.add_shutdown_callback(routines.stop_routines)" not in source
+
+    def test_the_services_come_up_with_the_process(self):
+        """`serve_in_background` binds the control port, and `control_api.serve`
+        starts the services behind that bind - so whichever process owns the
+        port owns the ticker, and it is up before the first job arrives."""
+        source = (SRC / "agent.py").read_text(encoding="utf-8")
+        main = source[source.index("if __name__ =="):]
+        assert "serve_in_background()" in main
+        assert main.index("serve_in_background()") < main.index("cli.run_app")
 
     def test_they_start_after_the_workers_they_live_on(self):
-        source = (SRC / "agent.py").read_text(encoding="utf-8")
-        assert source.index("workers.start_workers()") \
-            < source.index("routines.start_routines()")
+        """The ticker lives on the worker host's loop, so the host comes first.
+        That ordering moved into `services.start` with everything else."""
+        source = (SRC / "services.py").read_text(encoding="utf-8")
+        body = source[source.index("def start("):source.index("def stop(")]
+        assert body.index("workers.host().start()") < body.index("start_routines()")
 
     def test_what_ran_overnight_reaches_the_prompt(self):
         source = (SRC / "agent.py").read_text(encoding="utf-8")

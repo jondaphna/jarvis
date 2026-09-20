@@ -71,6 +71,15 @@ def home(tmp_path, monkeypatch):
     from jarvis import paths
 
     paths.refresh()
+    # The content engine ships switched off, and `queue_scripts` now refuses
+    # when it is off rather than relying on the tool having been filtered out
+    # of the model's list. A test that exercises the engine is a test of a
+    # machine where somebody turned it on, so turn it on.
+    from jarvis.config import Settings
+
+    settings = Settings.load()
+    settings.set("permissions.content", True)
+    settings.save()
     yield tmp_path / "home"
     monkeypatch.delenv("JARVIS_HOME", raising=False)
     paths.refresh()

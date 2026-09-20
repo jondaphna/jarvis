@@ -16,20 +16,45 @@ survives that; JARVIS will then ask for it once per launch.
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import os
 import secrets
 import sys
 import threading
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+from uuid import uuid4
 
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from . import paths
+
+
+def _preserve_broken_settings(exc: Exception) -> None:
+    """Move an unreadable settings file aside instead of writing over it.
+
+    Nothing here raises: a broken settings file must not stop JARVIS starting,
+    and the defaults are a working configuration. What it must not do is lose
+    the original, because the file is typed by hand as often as it is written
+    by the panel.
+    """
+    source = paths.CONFIG_FILE
+    try:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        kept = source.with_suffix(f".broken-{stamp}.json")
+        source.replace(kept)
+        message = (f"Your settings file couldn't be read ({exc}). I've kept it "
+                   f"as {kept.name} and started from defaults.")
+    except OSError:
+        message = (f"Your settings file couldn't be read ({exc}), and I "
+                   f"couldn't move it aside either. Starting from defaults; "
+                   f"do not save until you've looked at {source}.")
+    print(f"  [settings] {message}", file=sys.stderr)
 
 _KDF_ITERATIONS = 390_000
 
@@ -458,9 +483,20 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 class Settings:
     """Plain-JSON preferences with dotted-path access and deep-merged defaults."""
 
-    def __init__(self, data: dict[str, Any] | None = None) -> None:
+    def __init__(self, data: dict[str, Any] | None = None,
+                 unreadable: bool = False) -> None:
         self._lock = threading.RLock()
         self._data = _deep_merge(DEFAULT_SETTINGS, data or {})
+        #: True when these settings are shipped defaults standing in for a
+        #: file that could not be read. Preferences can live with that - a
+        #: damaged file should not stop the assistant talking. Permissions
+        #: cannot: every capability that ships switched on would switch itself
+        #: back on, and the one thing a settings file gets damaged by is being
+        #: hand-edited, which is often somebody switching something off. So
+        #: `permissions.allowed` refuses everything while this is set, and the
+        #: condition is repaired by fixing or deleting the file, not by
+        #: guessing at what it said.
+        self.unreadable = bool(unreadable)
 
     #: Old default values that should be replaced rather than preserved. A
     #: saved settings file always wins over a default, so shipping a better
@@ -488,11 +524,25 @@ class Settings:
 
     @classmethod
     def load(cls) -> "Settings":
+        damaged = False
         if paths.CONFIG_FILE.exists():
+            broken: Exception | None = None
             try:
                 raw = json.loads(paths.CONFIG_FILE.read_text("utf-8"))
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, OSError) as exc:
+                raw, broken = {}, exc
+            if broken is None and not isinstance(raw, dict):
+                broken = ValueError("the settings file isn't a JSON object")
+            if broken is not None:
+                # Starting from defaults is survivable; doing it silently and
+                # then saving over the file is not - the next `save()` writes
+                # the defaults back and the original settings are gone. So the
+                # damaged file is kept under a name nothing else writes, and
+                # the failure is said out loud rather than inferred later from
+                # "all my settings reset themselves".
                 raw = {}
+                _preserve_broken_settings(broken)
+                damaged = True
         else:
             raw = {}
 
@@ -511,14 +561,24 @@ class Settings:
                 if str(block.get(tail, "")).strip() in {s.strip() for s in stale}:
                     block.pop(tail, None)
 
-        return cls(raw)
+        return cls(raw, unreadable=damaged)
 
     def save(self) -> None:
         with self._lock:
             paths.ensure_dirs()
-            tmp = paths.CONFIG_FILE.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self._data, indent=2), encoding="utf-8")
-            tmp.replace(paths.CONFIG_FILE)
+            # A unique temporary name per write. The fixed `.tmp` was shared by
+            # every process and every thread: two savers at once wrote over
+            # each other's half-written file and then both renamed it into
+            # place, so the settings that landed were neither of theirs.
+            tmp = paths.CONFIG_FILE.with_suffix(f".{os.getpid()}-{uuid4().hex[:8]}.tmp")
+            try:
+                tmp.write_text(json.dumps(self._data, indent=2), encoding="utf-8")
+                tmp.replace(paths.CONFIG_FILE)
+            finally:
+                # A failed write leaves no litter beside the real file.
+                with contextlib.suppress(OSError):
+                    if tmp.exists():
+                        tmp.unlink()
 
     def get(self, dotted: str, default: Any = None) -> Any:
         node: Any = self._data

@@ -17,10 +17,8 @@ from livekit.agents.beta.tools import EndCallTool
 from livekit.plugins import ai_coustics, google
 
 import routines
-import workers
 from brain_memory import JarvisMemory
 from browser import BrowserManager
-from content.pipeline import recover_interrupted
 from content.tools import ContentStudio
 from control_api import serve_in_background
 from files import FileTools
@@ -190,32 +188,21 @@ async def my_agent(ctx: JobContext):
         "room": ctx.room.name,
     }
 
-    # The settings panel in the web page talks to this. It used to run in its
-    # own minimised window, which meant that when it failed it closed instantly
-    # and the only symptom was "the settings don't work". In here, it fails
-    # where you can read it.
-    serve_in_background()
-
-    # The background workers, before anything can queue work on them. They
-    # run on their own thread with their own event loop: a Reel script takes
-    # most of a minute to write, and a minute of the voice loop being busy is
-    # a minute of an assistant that has stopped listening.
-    workers.start_workers()
-    ctx.add_shutdown_callback(workers.stop_workers)
-
-    # Anything that was in flight when this machine last stopped. Done on a
-    # worker rather than here: it is several SQLite reads, and this is the
-    # thread the person is waiting on. A job abandoned by a dead process
-    # otherwise stays "running" forever, and the status tool keeps reporting
-    # work that nothing is doing.
-    workers.host().submit(recover_interrupted, name="recover interrupted jobs")
-
-    # The standing routines - the morning briefing and anything else set up in
-    # the settings panel. Armed here, ticking on the worker host, so they fire
-    # whether or not anybody is in a call. Started after the workers because
-    # the ticker lives on that host's loop.
-    routines.start_routines()
-    ctx.add_shutdown_callback(routines.stop_routines)
+    # The control API, the background workers and the routine ticker used to be
+    # started here, with their shutdown callbacks hung off `ctx`. They are not
+    # here any more, and the absence is the point: this function is a *job*,
+    # and a job is neither the process nor the machine.
+    #
+    # Two things were wrong with it. A shutdown callback runs when the session
+    # ends, so the scheduler stopped every time somebody hung up - "run the
+    # briefing while I am away" was never actually implemented. And the job may
+    # not even be in this process: livekit-agents runs a job in its own process
+    # everywhere except Windows, where it falls back to a thread. So what those
+    # lines did depended on the platform.
+    #
+    # They now run in the main process, before `cli.run_app`, and stop when the
+    # process does. See `services` for the whole argument, and for why the
+    # control API's port is what decides which process owns them.
 
     # One window, visible, and the same one every time. Jarvis opens a normal
     # Chrome and then attaches to it, so what you see and what it can act on
@@ -397,4 +384,19 @@ def _record_conversation(session: AgentSession, memory: JarvisMemory,
 
 
 if __name__ == "__main__":
+    # Everything standing starts here, in the main process, before the server
+    # takes its first job - and keeps running between calls and after them.
+    #
+    # `serve_in_background` binds the control API's port, and binding it is
+    # also the election for which process runs the workers and the routine
+    # ticker: `control_api.serve` starts them only if the bind succeeded, so a
+    # standalone control API started by butler-web.bat and this agent cannot
+    # both end up with their own worker host. Whichever one has the socket has
+    # the services, and the dashboard reaches that same socket.
+    #
+    # This is deliberately outside `my_agent`. It is also deliberately outside
+    # any LiveKit lifecycle hook: the ones available run per job or per job
+    # process, and a scheduler that exists per job is the bug this replaces.
+    serve_in_background()
+
     cli.run_app(server)

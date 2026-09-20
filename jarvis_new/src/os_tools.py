@@ -19,14 +19,79 @@ playing - Spotify, YouTube, a game - instead of only one app.
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 from livekit.agents import RunContext, function_tool
 from livekit.agents.llm import ToolError
 
 import launcher
+
+#: How long a machine reading stays good enough to answer from. Processor load
+#: over the last few seconds is what the question means, so serving a reading
+#: taken moments ago is not a stale answer, it is the same answer without the
+#: wait.
+TELEMETRY_TTL = 5.0
+
+#: How long the sampler spends measuring processor load. `psutil` needs a real
+#: interval - it compares two readings - and anything shorter than this is
+#: mostly noise.
+TELEMETRY_INTERVAL = 0.4
+
+_telemetry_lock = threading.Lock()
+_telemetry: tuple[float, str] | None = None
+
+
+def _sample_machine() -> str:
+    """Read the machine and describe it. Blocks; never call this on a loop."""
+    import psutil
+
+    cpu = psutil.cpu_percent(interval=TELEMETRY_INTERVAL)
+    memory = psutil.virtual_memory()
+    disk = psutil.disk_usage(str(Path.home().anchor or "/"))
+    parts = [
+        f"processor {cpu:.0f} percent",
+        f"memory {memory.percent:.0f} percent used "
+        f"({memory.available / 1e9:.1f} gigabytes free)",
+        f"disk {disk.percent:.0f} percent full "
+        f"({disk.free / 1e9:.0f} gigabytes free)",
+    ]
+    try:
+        battery = psutil.sensors_battery()
+        if battery is not None:
+            plugged = "charging" if battery.power_plugged else "on battery"
+            parts.append(f"battery {battery.percent:.0f} percent, {plugged}")
+    except Exception:
+        pass
+    return "; ".join(parts)
+
+
+def _cached_machine() -> str | None:
+    """The last reading, if it is recent enough to still be the answer."""
+    with _telemetry_lock:
+        if _telemetry is None:
+            return None
+        taken, reading = _telemetry
+    return reading if time.monotonic() - taken < TELEMETRY_TTL else None
+
+
+def _store_machine(reading: str) -> None:
+    global _telemetry
+
+    with _telemetry_lock:
+        _telemetry = (time.monotonic(), reading)
+
+
+def reset_telemetry_cache() -> None:
+    """Forget the cached reading. For tests, and for a deliberate refresh."""
+    global _telemetry
+
+    with _telemetry_lock:
+        _telemetry = None
 
 WINDOWS = sys.platform == "win32"
 
@@ -278,31 +343,28 @@ class OSTools:
         """How this computer is doing: processor, memory and disk.
 
         Summarise it in a sentence rather than reading the numbers out.
+
+        Two things happen here that are not obvious from the result. The
+        reading is taken on a thread, because `psutil.cpu_percent` with an
+        interval *blocks for that interval* - measured at 400 milliseconds,
+        taken straight out of the audio loop, which is long enough to hear.
+        And a recent reading is reused rather than retaken, because "how is
+        the machine doing" means the last few seconds either way, so a second
+        ask answers instantly instead of stalling for another sample.
         """
         try:
-            import psutil
+            import psutil  # noqa: F401  - checked here so the message is kind
         except ImportError:
             return ("Detailed stats need the psutil package, which isn't "
                     "installed. Everything else still works.")
 
-        cpu = psutil.cpu_percent(interval=0.4)
-        memory = psutil.virtual_memory()
-        disk = psutil.disk_usage(str(Path.home().anchor or "/"))
-        parts = [
-            f"processor {cpu:.0f} percent",
-            f"memory {memory.percent:.0f} percent used "
-            f"({memory.available / 1e9:.1f} gigabytes free)",
-            f"disk {disk.percent:.0f} percent full "
-            f"({disk.free / 1e9:.0f} gigabytes free)",
-        ]
-        try:
-            battery = psutil.sensors_battery()
-            if battery is not None:
-                plugged = "charging" if battery.power_plugged else "on battery"
-                parts.append(f"battery {battery.percent:.0f} percent, {plugged}")
-        except Exception:
-            pass
-        return "; ".join(parts)
+        cached = _cached_machine()
+        if cached is not None:
+            return cached
+
+        reading = await asyncio.to_thread(_sample_machine)
+        _store_machine(reading)
+        return reading
 
     # ------------------------------------------------------------------ #
     # Power - the part that needs asking

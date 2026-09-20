@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import secrets
 import sys
 import threading
@@ -28,6 +29,16 @@ from urllib.parse import unquote, urlparse
 
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT_PORT = 8765
+
+#: The most a request body may declare. This is a local settings API - the
+#: biggest thing anyone legitimately sends is a settings document or a routine
+#: - and the declared length was previously the size of an allocation chosen
+#: by the caller.
+MAX_BODY_BYTES = 256 * 1024
+
+
+class RequestTooLargeError(ValueError):
+    """A body bigger than this API will read. Answered with 413."""
 
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
@@ -44,20 +55,98 @@ def token_path() -> Path:
     return paths.ROOT / "control.token"
 
 
-def load_token() -> str:
-    """The shared secret, created once and reused."""
-    path = token_path()
+#: How many times to try to establish the token before giving up. More than
+#: the old three, because each round now waits: the case being survived is two
+#: processes starting together, and the loser needs the winner to have
+#: finished writing, not just to have created the file.
+TOKEN_ATTEMPTS = 5
+
+#: Base delay between attempts, multiplied by the attempt number.
+TOKEN_RETRY_DELAY = 0.05
+
+#: How old an empty token file has to be before it counts as wreckage rather
+#: than as a process that is about to write it. Generous: the cost of waiting
+#: is a slow start-up, and the cost of being wrong is two processes holding
+#: different tokens, which presents as a dashboard that silently does nothing.
+TOKEN_STALE_SECONDS = 30.0
+
+
+def _token_file_is_stale(path: Path) -> bool:
+    """Is this empty token file wreckage rather than a write in progress?"""
     try:
-        existing = path.read_text(encoding="utf-8").strip()
-        if existing:
-            return existing
+        return (time.time() - path.stat().st_mtime) > TOKEN_STALE_SECONDS
     except OSError:
-        pass
-    fresh = secrets.token_urlsafe(32)
-    path.write_text(fresh, encoding="utf-8")
-    with contextlib.suppress(OSError):     # best effort; Windows ignores mode
-        path.chmod(0o600)
-    return fresh
+        return False
+
+
+def load_token() -> str:
+    """The shared secret, created once and reused.
+
+    Creation is a single exclusive open rather than "is it there? no? write
+    one". Two processes starting together - and `butler-web.bat` starts the
+    control API alongside the one `butler-agent.bat` may already have started
+    - both used to find no file, both wrote, and each went on believing its
+    own token was the one. Whoever loses the race now reads the winner's.
+
+    Raises rather than inventing a token it could not store. See the comment
+    at the end for why that is the safer failure.
+    """
+    path = token_path()
+    last_error = ""
+    for attempt in range(TOKEN_ATTEMPTS):
+        try:
+            existing = path.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+            # The file is there but empty. That is either the winner of the
+            # race a moment before it writes, or a token file a crash left
+            # behind. Telling those apart by *age* is the only safe way:
+            # deleting it because it happens to be empty right now is deleting
+            # the file another process is in the middle of writing, which is
+            # how two processes end up with different tokens.
+            if not _token_file_is_stale(path):
+                time.sleep(TOKEN_RETRY_DELAY * (attempt + 1))
+                continue
+            with contextlib.suppress(OSError):
+                path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+
+        fresh = secrets.token_urlsafe(32)
+        try:
+            # O_EXCL: the file is created by exactly one caller, and the mode
+            # is set as it is created rather than a moment afterwards.
+            handle = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            continue                        # somebody else won; read theirs
+        except OSError as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            time.sleep(TOKEN_RETRY_DELAY * (attempt + 1))
+            continue
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(fresh)
+            stream.flush()
+            with contextlib.suppress(OSError):
+                os.fsync(stream.fileno())
+        with contextlib.suppress(OSError):  # best effort; Windows ignores mode
+            path.chmod(0o600)
+        return fresh
+
+    # This used to return a fresh in-memory token here, on the reasoning that
+    # a token only this process knows is still a boundary. It is not: the
+    # dashboard proxy reads the *file* to get the token it sends, so a token
+    # that never reached the file is a control API that refuses every request
+    # the dashboard makes, and the visible symptom is a panel that has simply
+    # stopped working with no explanation. Refusing to start says which file
+    # and why.
+    detail = f" ({last_error})" if last_error else ""
+    raise RuntimeError(
+        f"couldn't establish the control token at {path}{detail}. The "
+        f"dashboard reads this file to talk to JARVIS, so a token that isn't "
+        f"in it is no use. Check the file's permissions, or delete it and "
+        f"start again.")
 
 
 # --------------------------------------------------------------------------- #
@@ -479,6 +568,53 @@ class Control:
                     "in_progress": 0, "concurrency": 1, "jobs": [],
                     "error": str(exc)}
 
+    def services(self) -> dict[str, Any]:
+        """What the always-on background side is doing, for the kill switch.
+
+        In-memory only, like `workers()`: the dashboard polls this while it is
+        open and looking at the machine has to stay free.
+        """
+        try:
+            import services as service_layer
+
+            return service_layer.state()
+        except Exception as exc:
+            return {"state": "unknown", "running": False, "killed": False,
+                    "error": f"{type(exc).__name__}: {exc}"}
+
+    def set_services(self, action: str) -> dict[str, Any]:
+        """The master switch: `kill`, `start` or `restart`.
+
+        What "kill" can and cannot do is worth being exact about, because the
+        button says kill and somebody will believe it. It stops the routine
+        ticker, cancels every queued and running job, and stops the worker
+        host. A queued job never starts. A job that is a coroutine stops at its
+        next await.
+
+        A job that is a plain blocking function does not stop: Python cannot
+        end a thread from outside, so an FFmpeg render or an API call already
+        in flight runs to its end with nobody waiting for the result. It is
+        cancelled from every caller's point of view and nothing new follows it.
+        The reply says how many were cancelled and what is still winding down
+        rather than reporting an empty machine.
+
+        The voice call is deliberately untouched. It is not background work,
+        and cutting somebody off mid-sentence because they pressed a button
+        labelled "stop the background jobs" is not what the button says.
+        """
+        import services as service_layer
+
+        wanted = (action or "").strip().lower()
+        if wanted in ("kill", "stop", "off"):
+            return service_layer.kill(reason="dashboard kill switch")
+        if wanted in ("start", "on"):
+            return service_layer.start(reason="dashboard")
+        if wanted == "restart":
+            return service_layer.restart(reason="dashboard")
+        raise ValueError(
+            f"{action!r} isn't something the services switch does. "
+            f"Use 'kill', 'start' or 'restart'.")
+
     def set_workers_paused(self, paused: bool) -> dict[str, Any]:
         """Hold back background work, or let it flow again.
 
@@ -666,15 +802,39 @@ class _Handler(BaseHTTPRequestHandler):
             self.headers.get("X-Jarvis-Token", ""), self.token)
 
     def _body(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length") or 0)
+        """The request body, as an object, within a size this can hold.
+
+        Three things this used to trust and no longer does. The declared
+        length: `int()` of a header nobody checked, then a read of exactly
+        that many bytes, which is an allocation chosen by the caller. A
+        negative or unparseable length, which reached `rfile.read` as-is. And
+        a JSON scalar, which was wrapped as `{"value": ...}` and let a request
+        that does not match the contract go on to be handled as though it did.
+        """
+        raw_length = (self.headers.get("Content-Length") or "0").strip()
+        try:
+            length = int(raw_length)
+        except ValueError:
+            raise ValueError("Content-Length isn't a number.") from None
+        if length < 0:
+            raise ValueError("Content-Length can't be negative.")
+        if length > MAX_BODY_BYTES:
+            raise RequestTooLargeError(
+                f"That request body is {length} bytes; the limit is "
+                f"{MAX_BODY_BYTES}.")
         if not length:
             return {}
+
         raw = self.rfile.read(length)
+        if len(raw) != length:
+            raise ValueError("The request body ended early.")
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise ValueError(f"That wasn't valid JSON: {exc}") from exc
-        return data if isinstance(data, dict) else {"value": data}
+        if not isinstance(data, dict):
+            raise ValueError("The request body has to be a JSON object.")
+        return data
 
     # -- routes ------------------------------------------------------------ #
 
@@ -701,6 +861,8 @@ class _Handler(BaseHTTPRequestHandler):
 
         try:
             self._send(200, self._dispatch(method, parts))
+        except RequestTooLargeError as exc:
+            self._send(413, {"error": str(exc)})
         except ValueError as exc:
             self._send(400, {"error": str(exc)})
         except Exception as exc:               # pragma: no cover - defensive
@@ -804,6 +966,13 @@ class _Handler(BaseHTTPRequestHandler):
                 body = self._body()
                 return control.set_workers_paused(bool(body.get("paused", True)))
 
+        if head == "services":
+            if method == "GET":
+                return control.services()
+            if method == "POST":
+                body = self._body()
+                return control.set_services(str(body.get("action", "")))
+
         if head == "costs" and method == "GET":
             return control.costs()
 
@@ -847,8 +1016,22 @@ def serve_in_background(port: int = DEFAULT_PORT) -> bool:
         return False
 
 
-def serve(port: int = DEFAULT_PORT, background: bool = False) -> ThreadingHTTPServer:
-    """Start the control API on localhost."""
+def serve(port: int = DEFAULT_PORT, background: bool = False,
+          with_services: bool = True) -> ThreadingHTTPServer:
+    """Start the control API on localhost, and the background services with it.
+
+    Binding the port is also the election for who runs the workers and the
+    routine ticker. Two processes can try to be the control API - the voice
+    agent starts one, and `butler-web.bat` starts another beside it - and only
+    one of them can have the socket. Tying the services to the socket is what
+    stops both processes running their own worker host, which is what used to
+    make "pause the workers" pause a host that was not running the job you were
+    looking at. See `services` for the whole argument.
+
+    The bind comes first and the services second, deliberately: if the port is
+    taken, `ThreadingHTTPServer` raises here and the services are never touched,
+    which is exactly the behaviour the losing process needs.
+    """
     _Handler.control = Control()
     _Handler.token = load_token()
 
@@ -857,6 +1040,11 @@ def serve(port: int = DEFAULT_PORT, background: bool = False) -> ThreadingHTTPSe
         thread = threading.Thread(target=server.serve_forever, daemon=True,
                                   name="jarvis-control-api")
         thread.start()
+
+    if with_services:
+        import services
+
+        services.start(reason=f"control API bound to port {port}")
     return server
 
 

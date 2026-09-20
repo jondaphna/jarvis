@@ -128,8 +128,25 @@ class MissionScheduler:
         log.info("scheduler running with %d scheduled mission(s)", scheduled)
         bus.publish(events.INFO, f"Scheduler running - {scheduled} mission(s) armed")
 
+    def _unschedule(self, mission_id: str) -> None:
+        """Drop any trigger this mission already has. Quiet if it has none."""
+        if self._scheduler is None:
+            return
+        try:
+            self._scheduler.remove_job(mission_id)
+        except Exception:
+            pass
+
     def _schedule(self, mission: Mission) -> bool:
-        if self._scheduler is None or not mission.schedule or not mission.enabled:
+        if self._scheduler is None:
+            return False
+        if not mission.schedule or not mission.enabled:
+            # Saving a mission re-schedules it, and this is the path an edit
+            # to "disabled" or "manual" takes. Returning without removing the
+            # old trigger left it armed: the mission still fired on the old
+            # schedule until the next restart, which is the opposite of what
+            # the edit said.
+            self._unschedule(mission.id)
             return False
         try:
             from apscheduler.triggers.cron import CronTrigger
@@ -165,6 +182,15 @@ class MissionScheduler:
         mission = self.missions.get(mission_id)
         if mission is None:
             log.warning("scheduled mission %s no longer exists", mission_id)
+            self._unschedule(mission_id)
+            return
+        if not mission.enabled:
+            # Checked again here, not only when the trigger was added. A
+            # trigger can outlive the state it was created under, and a
+            # disabled mission running unattended is the one outcome the
+            # switch exists to prevent.
+            log.info("scheduled mission %s is disabled; not running", mission_id)
+            self._unschedule(mission_id)
             return
         await self.run(mission, trigger="schedule")
 
@@ -237,8 +263,5 @@ class MissionScheduler:
             if enabled:
                 self._schedule(mission)
             else:
-                try:
-                    self._scheduler.remove_job(mission_id)
-                except Exception:
-                    pass
+                self._unschedule(mission_id)
         return True

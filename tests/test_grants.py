@@ -96,6 +96,35 @@ class TestGrantMatching:
         grant = parse_grants("You have permission to post to TikTok, once.")[0]
         assert not grant.covers(CAP_PAYMENT_SPEND, "tiktok")
 
+    def test_a_spend_with_no_stated_price_does_not_fit_a_capped_grant(self):
+        """A cap can only be checked against a number.
+
+        The check used to run only when an amount was supplied, so a request
+        that named no price matched a grant with a price limit - which is the
+        one request the limit exists to stop.
+        """
+        grant = parse_grants(
+            "You have permission to spend up to $20 on Kling, 5 times.")[0]
+        assert not grant.covers(CAP_PAYMENT_SPEND, "kling")
+        assert not grant.covers(CAP_PAYMENT_SPEND, "kling", None)
+
+    @pytest.mark.parametrize("amount", [
+        -100.0, float("inf"), float("-inf"), float("nan"), True, "5",
+    ])
+    def test_a_nonsense_price_never_fits_a_capped_grant(self, amount):
+        grant = parse_grants(
+            "You have permission to spend up to $20 on Kling, 5 times.")[0]
+        assert not grant.covers(CAP_PAYMENT_SPEND, "kling", amount)
+
+    def test_a_negative_amount_cannot_credit_the_budget(self):
+        """`consume` added whatever it was given, so a negative *refunded*."""
+        grant = parse_grants(
+            "You have permission to spend up to $20 on Kling, 5 times.")[0]
+        grant.consume(15.0)
+        grant.consume(-100.0)
+        assert grant.spent_usd == 15.0
+        assert not grant.covers(CAP_PAYMENT_SPEND, "kling", 15.0)
+
     def test_uses_are_exhausted(self):
         grant = parse_grants("You have permission to email them, just once.")[0]
         assert grant.covers(CAP_COMMS_SEND)

@@ -54,6 +54,56 @@ export type Permission = {
   risk: Risk;
 };
 
+/**
+ * The always-on background side: the worker host and the routine ticker,
+ * owned by whichever process holds the control API's port.
+ *
+ * `owner` and `owns_services` exist because there can be more than one JARVIS
+ * process on the machine - the voice agent and a standalone control API - and
+ * only one of them runs the services. Without this the dashboard could show
+ * "workers idle" while the other process was busy.
+ */
+export type ServicesState = {
+  /**
+   * 'running' | 'degraded' | 'stopped' | 'killed' | 'unknown'. `killed` was
+   * chosen; `degraded` means it came up but something in it did not.
+   */
+  state: string;
+  running: boolean;
+  /** Up, but the worker host or the routine ticker failed to start. */
+  degraded: boolean;
+  killed: boolean;
+  /**
+   * The durable stop latch. Unlike `killed`, this is a file on the machine,
+   * so it is still true after closing the window and opening it again, and
+   * every JARVIS process on the machine reads the same one.
+   */
+  execution_disabled: boolean;
+  latch?: {
+    disabled: boolean;
+    at?: string;
+    reason?: string;
+    by?: string;
+    generation?: number;
+    path?: string;
+  };
+  owner: string;
+  this_process: string;
+  owns_services: boolean;
+  uptime_seconds: number;
+  error: string;
+  /** How many jobs the last kill cancelled. Only present on a kill reply. */
+  cancelled?: number;
+  workers: {
+    running: boolean;
+    paused: boolean;
+    queued: number;
+    in_progress: number;
+    error?: string;
+  };
+  routines: { ticking: boolean; error?: string };
+};
+
 export type WorkerJob = {
   ref: string;
   name: string;

@@ -124,17 +124,48 @@ def _settings() -> Any:
 
 
 def allowed(key: str, settings: Any = None) -> bool:
-    """Is this capability switched on?"""
+    """Is this capability switched on?
+
+    Everything uncertain here answers no, which is the opposite of how this
+    used to read, and each of the three cases was a real way to say yes by
+    accident:
+
+    - **A capability nobody declared** used to be allowed, on the grounds
+      that switches govern known tools and an unknown name is not one of
+      them. But a renamed key, a typo in a caller, or a tool added to the
+      registry and forgotten here all arrive as an unknown name, and every
+      one of them silently granted itself permission.
+    - **A stored value that is not a boolean** went through `bool()`, where
+      the string `"false"` - which is what a hand-edited settings file, or a
+      form that posted its checkbox as text, actually contains - is true.
+      Only a real `True` counts now.
+    - **Settings that cannot be read at all** fell back to the shipped
+      default, so a corrupt file re-enabled every capability that ships on.
+      A policy you cannot read is not a policy that permits things.
+
+    A capability that is simply *absent* from the settings still takes its
+    shipped default. That is not a fallback: it is the value in force until
+    somebody changes it, and on a machine where nothing has been switched off
+    yet there is nothing to honour but the default.
+    """
     capability = BY_KEY.get(key)
     if capability is None:
-        return True
+        return False
     settings = settings if settings is not None else _settings()
     if settings is None:
-        return capability.default
+        return False
+    # Settings standing in for a file that could not be read are not the
+    # policy, they are the shipped defaults wearing its name. See
+    # `Settings.unreadable`.
+    if getattr(settings, "unreadable", False):
+        return False
     try:
-        return bool(settings.get(f"permissions.{key}", capability.default))
+        value = settings.get(f"permissions.{key}", capability.default)
     except Exception:
+        return False
+    if value is None:
         return capability.default
+    return value is True
 
 
 def blocked_tools(settings: Any = None) -> set[str]:

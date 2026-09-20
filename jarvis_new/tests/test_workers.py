@@ -208,3 +208,65 @@ def test_pausing_before_the_host_starts_still_holds(host):
         assert ran.wait(timeout=5.0)
     finally:
         quiet.stop()
+
+
+class TestCancellingDuringBackoff:
+    """A job cancelled while waiting to retry must not then retry.
+
+    The bug: the retry sleep was not registered as the job's current work, so
+    `cancel()` found nothing to cancel. It marked the job cancelled, the sleep
+    finished on its own, and the loop ran the work again - ending in `done`, on
+    a job the caller had been told was cancelled.
+    """
+
+    def test_a_cancel_during_backoff_stops_the_retry(self, host):
+        attempts = []
+        started = threading.Event()
+
+        def flaky():
+            attempts.append(1)
+            started.set()
+            raise RuntimeError("first attempt fails")
+
+        ref = host.submit(flaky, name="flaky", retries=3, backoff=2.0)
+        assert started.wait(timeout=5.0)
+        # Now it is in the backoff sleep, between attempt one and attempt two.
+        assert wait_for(lambda: host.job(ref).attempts == 1)
+        assert host.cancel(ref) is True
+
+        assert wait_for(lambda: host.job(ref).status == "cancelled", timeout=10)
+        # The proof: the second attempt never happened, and the status did not
+        # later turn into "done" or "failed" behind the cancel. A cancel can
+        # land at three points here - during the attempt, during the backoff,
+        # or in the moment between the two - and the job must end cancelled
+        # from all three, because `cancel()` has already told the caller so.
+        time.sleep(0.5)
+        assert len(attempts) == 1
+        assert host.job(ref).status == "cancelled"
+
+
+def test_a_second_start_never_makes_a_second_thread():
+    """Two threads on one host share a queue attribute; last writer wins.
+
+    `running` needs both a live thread and `_ready`, and the first thread sets
+    `_ready` a moment after it starts. A caller arriving inside that window
+    used to see False and start a rival loop.
+    """
+    made = workers.WorkerHost(name="race-test")
+    threads_seen = []
+
+    def racer():
+        made.start()
+        threads_seen.append(made._thread)
+
+    try:
+        racers = [threading.Thread(target=racer) for _ in range(8)]
+        for thread in racers:
+            thread.start()
+        for thread in racers:
+            thread.join(timeout=10)
+        assert made.running is True
+        # Every caller ended up pointing at the same one.
+        assert len({id(thread) for thread in threads_seen}) == 1
+    finally:
+        made.stop()

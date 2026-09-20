@@ -130,6 +130,11 @@ def register_core_tools(registry: ToolRegistry, computer: Computer, memory,
         {"type": "object", "properties": {"source": STR, "destination": STR},
          "required": ["source", "destination"]},
         copy_file, capability=CAP_FS_WRITE, resource_key="destination",
+        # Copying reads the source as surely as it writes the destination.
+        # Judged on the destination alone, permission to write one folder was
+        # permission to read every file the account could open, one copy at a
+        # time. `move_file` above already declares both; this did not.
+        also_requires=((CAP_FS_READ, "source"),),
         path_keys=("source", "destination"),
     )
 

@@ -1,0 +1,42 @@
+# Moved here from jarvis_new/.github/workflows/ on 20 September 2026; see
+# tests.yml for why.
+name: Ruff
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ruff-check:
+    name: ruff check (jarvis_new)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: jarvis_new
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v1
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: UV_GIT_LFS=1 uv sync --dev
+
+      - name: Run ruff linter
+        run: uv run ruff check --output-format=github .
+
+      # The template also ran `ruff format --check --diff .` here. That is not
+      # enabled, and turning it on would not be a lint gate: 58 of the 77 files
+      # in jarvis_new differ from the formatter's preference, so it would fail
+      # on the first push and stay failing. Reformatting them in one commit
+      # would also bury every real diff for a while. `ruff check` is the gate
+      # that is clean today and has to stay clean; run the formatter as its own
+      # deliberate piece of work if you want it.
