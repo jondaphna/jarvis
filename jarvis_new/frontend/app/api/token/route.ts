@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { AccessToken, type AccessTokenOptions, type VideoGrant } from 'livekit-server-sdk';
 import { randomUUID } from 'node:crypto';
-import { RoomConfiguration } from '@livekit/protocol';
+import { RoomAgentDispatch, RoomConfiguration } from '@livekit/protocol';
 import { authorized, requestOriginAllowed } from '@/lib/auth';
 import { authConfig } from '@/lib/owner';
 
@@ -90,7 +90,10 @@ export async function POST(req: Request) {
       roomName,
       // Chosen here, not by the caller. A browser that can name the agent to
       // dispatch is a browser that can run something other than JARVIS.
-      new RoomConfiguration(),
+      // The agent registers under an explicit name, and LiveKit only sends a
+      // named agent into a room whose token asks for it - an empty config
+      // here is a call the agent never joins.
+      agentRoomConfig(),
       key,
       secret
     );
@@ -109,6 +112,11 @@ export async function POST(req: Request) {
       { status: 500, headers: { 'Cache-Control': 'no-store' } }
     );
   }
+}
+
+function agentRoomConfig(): RoomConfiguration {
+  const agentName = process.env.AGENT_NAME || 'my-agent';
+  return new RoomConfiguration({ agents: [new RoomAgentDispatch({ agentName })] });
 }
 
 function createParticipantToken(

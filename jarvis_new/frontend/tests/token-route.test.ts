@@ -106,6 +106,15 @@ describe('the credentials it hands out', () => {
     expect(JSON.stringify(claims)).not.toContain('something-else');
   });
 
+  it('asks LiveKit to send the JARVIS agent into the room', async () => {
+    const response = await POST(tokenRequest({ cookie: await ownerCookie() }));
+    const claims = decodeJwt((await response.json()).participantToken) as Record<string, unknown>;
+
+    // The agent registers under an explicit name, so a token without this is
+    // a call nobody answers.
+    expect(claims.roomConfig).toMatchObject({ agents: [{ agentName: 'my-agent' }] });
+  });
+
   it('is never cached', async () => {
     const response = await POST(tokenRequest({ cookie: await ownerCookie() }));
 
