@@ -6,6 +6,7 @@ import {
   type SessionProviderProps,
   type UseSessionReturn,
 } from '@livekit/components-react';
+import { SpeakerRouting } from '@/components/agents-ui/speaker-select';
 
 /**
  * Props for the AgentSessionProvider component.
@@ -56,6 +57,7 @@ export function AgentSessionProvider({
     <SessionProvider session={session}>
       {children}
       <RoomAudioRenderer {...roomAudioRendererProps} />
+      <SpeakerRouting />
     </SessionProvider>
   );
 }

@@ -11,6 +11,7 @@ import {
   AgentTrackToggle,
   agentTrackToggleVariants,
 } from '@/components/agents-ui/agent-track-toggle';
+import { SpeakerSelect } from '@/components/agents-ui/speaker-select';
 import { Button } from '@/components/ui/button';
 import { Toggle } from '@/components/ui/toggle';
 import {
@@ -384,6 +385,9 @@ export function AgentControlBar({
               <MessageSquareTextIcon />
             </Toggle>
           )}
+
+          {/* Speaker */}
+          <SpeakerSelect className={cn(variant === 'livekit' && 'rounded-full')} />
         </div>
 
         {/* Disconnect */}
