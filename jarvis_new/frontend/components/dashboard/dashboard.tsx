@@ -209,7 +209,13 @@ export function DashboardBody({
         />
       )}
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      {/*
+        `min-h-0` is what lets <main> scroll. In the drawer this column sits in
+        a vertical flex, where a flex child is never shorter than its content by
+        default - so it grew to the full length of the tab and everything below
+        the window was cut off.
+      */}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <Header
           title={current.label}
           layout={layout}

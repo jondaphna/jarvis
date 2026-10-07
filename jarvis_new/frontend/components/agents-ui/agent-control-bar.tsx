@@ -11,6 +11,7 @@ import {
   AgentTrackToggle,
   agentTrackToggleVariants,
 } from '@/components/agents-ui/agent-track-toggle';
+import { AudioDevicePicker } from '@/components/agents-ui/audio-device-picker';
 import { Button } from '@/components/ui/button';
 import { Toggle } from '@/components/ui/toggle';
 import {
@@ -401,6 +402,9 @@ export function AgentControlBar({
           </AgentDisconnectButton>
         )}
       </div>
+
+      {/* Microphone and speaker */}
+      <AudioDevicePicker className="mt-2 px-1" />
     </div>
   );
 }
